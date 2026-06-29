@@ -1,0 +1,153 @@
+.pcp-body {
+  color: var(--fill-primary, #333);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.pcp-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 8px;
+}
+
+.pcp-toolbar button {
+  border: 1px solid var(--material-border, #cfcfcf);
+  border-radius: 4px;
+  background: var(--material-background, #fff);
+  color: var(--fill-primary, #333);
+  padding: 3px 8px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.pcp-toolbar button:disabled {
+  cursor: default;
+  opacity: 0.55;
+}
+
+.pcp-status {
+  margin: 4px 0 8px;
+  color: var(--fill-secondary, #666);
+}
+
+.pcp-status[data-tone="ok"] {
+  color: #2f8f46;
+}
+
+.pcp-status[data-tone="warn"] {
+  color: #b25b00;
+}
+
+.pcp-meta {
+  margin: 0 0 10px;
+  padding: 8px;
+  border: 1px solid var(--material-border, #ddd);
+  border-radius: 5px;
+  background: var(--material-mix, #f8f8f8);
+}
+
+.pcp-title {
+  color: #258240;
+  font-weight: 600;
+}
+
+.pcp-detail,
+.pcp-keywords,
+.pcp-related-meta {
+  margin-top: 4px;
+  color: var(--fill-secondary, #666);
+  font-size: 11px;
+}
+
+.pcp-section {
+  margin-top: 12px;
+}
+
+.pcp-section h3 {
+  margin: 0 0 6px;
+  color: #258240;
+  font-size: 13px;
+}
+
+.pcp-related-details {
+  margin: 0 0 6px;
+}
+
+.pcp-related-details > summary {
+  border-radius: 4px;
+  color: #258240;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.pcp-related-details > summary:hover {
+  background: var(--material-mix, #f6f6f6);
+}
+
+.pcp-kimi {
+  color: var(--fill-primary, #333);
+  overflow-wrap: anywhere;
+}
+
+.pcp-kimi .faq-q {
+  margin: 14px 0 8px;
+  color: #c62828;
+  font-weight: 600;
+}
+
+.pcp-kimi h1,
+.pcp-kimi h2,
+.pcp-kimi h3,
+.pcp-kimi h4 {
+  margin: 0.9em 0 0.35em;
+  font-size: 1em;
+}
+
+.pcp-kimi ul,
+.pcp-kimi ol {
+  padding-left: 18px;
+}
+
+.pcp-kimi li {
+  margin: 0.25em 0;
+}
+
+.pcp-kimi pre {
+  overflow: auto;
+  padding: 8px;
+  border: 1px solid var(--material-border, #ddd);
+  border-radius: 4px;
+  background: var(--material-mix, #f6f6f6);
+}
+
+.pcp-loading {
+  color: #b25b00;
+  font-weight: 600;
+}
+
+.pcp-related-list {
+  margin: 0;
+  padding-left: 20px;
+}
+
+.pcp-related-list li {
+  margin: 0 0 12px;
+}
+
+.pcp-related-title {
+  color: #258240;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.pcp-related-summary {
+  display: -webkit-box;
+  margin: 4px 0 0;
+  overflow: hidden;
+  color: var(--fill-primary, #333);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 4;
+}
