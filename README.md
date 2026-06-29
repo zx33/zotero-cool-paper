@@ -6,9 +6,10 @@
 
 [![Zotero](https://img.shields.io/badge/Zotero-7--9-CC2936?logo=zotero&logoColor=white)](https://www.zotero.org)
 [![papers.cool](https://img.shields.io/badge/papers.cool-KIMI%20%2B%20REL-ff9800)](https://papers.cool)
-[![Author](https://img.shields.io/badge/Author-AndyBear-7c3aed)](https://github.com/zx33)
 
 一个轻量 Zotero 插件：识别 arXiv / papers.cool / OpenReview 条目，自动抓取 papers.cool 已生成或流式生成中的 KIMI 解读，并把 REL 相关论文按时间排序展示在论文侧边栏。
+
+*Fully powered by OAI Codex*
 
 </div>
 
@@ -55,7 +56,6 @@ npm run build
 ## 隐私说明
 
 - 插件只请求公开的 papers.cool 页面与接口
-- 不会向第三方发送 Zotero 账号、笔记、标签或文库信息
 - 缓存内容仅保存在本地 Zotero SQLite 数据库表 `paperscool_cache`
 - 手动刷新只会重新请求当前论文对应的 papers.cool 内容
 
@@ -64,6 +64,5 @@ npm run build
 ## 致谢
 
 - 感谢苏神（苏剑林）做出的伟大 papers.cool 平台，让论文发现、筛选、KIMI 解读和相关论文探索变得优雅又高效
-- 感谢 [windingwind/zotero-plugin-toolkit](https://github.com/windingwind/zotero-plugin-toolkit) 及其 Zotero 插件模板生态，极大降低了 Zotero 7+ 插件开发门槛
+- 感谢 [windingwind/zotero-plugin-toolkit](https://github.com/windingwind/zotero-plugin-toolkit)
 - 本项目由 AndyBear 与 OpenAI Codex 协作开发，感谢这段从需求探索到调试打磨的 pair programming （本条由Codex生成）
-- 感谢 Zotero 社区长期维护开放、可扩展的学术文献管理生态
