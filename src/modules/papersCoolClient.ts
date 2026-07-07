@@ -100,16 +100,28 @@ export function buildKimiURL(
 export function buildRelatedURL(branch: PapersCoolBranch, keywords: string) {
   const url = new URL(`/${branch}/search`, BASE_URL);
   url.searchParams.set("query", keywords);
-  url.searchParams.set("sort", "0");
+  applySupportedSearchParams(url, branch, { timeSort: true });
   return url.href;
 }
 
 function buildSearchURL(branch: PapersCoolBranch, title: string) {
   const url = new URL(`/${branch}/search`, BASE_URL);
+  url.searchParams.set("highlight", "1");
   url.searchParams.set("query", title);
-  url.searchParams.set("sort", "0");
+  applySupportedSearchParams(url, branch, { timeSort: true });
   url.searchParams.set("show", "5");
   return url.href;
+}
+
+function applySupportedSearchParams(
+  url: URL,
+  branch: PapersCoolBranch,
+  options: { timeSort?: boolean },
+) {
+  // papers.cool venue search currently returns HTTP 500 when sort=0 is present.
+  if (options.timeSort && branch === "arxiv") {
+    url.searchParams.set("sort", "0");
+  }
 }
 
 function requestText(

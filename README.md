@@ -9,7 +9,7 @@
 
 一个轻量 Zotero 插件：识别 arXiv / papers.cool / OpenReview 条目，自动抓取 papers.cool 已生成或流式生成中的 KIMI 解读，并把 REL 相关论文按时间排序展示在论文侧边栏。
 
-*Fully powered by OAI Codex*
+_Fully powered by OAI Codex_
 
 </div>
 
