@@ -7,8 +7,9 @@ export default defineConfig({
   name: pkg.config.addonName,
   id: pkg.config.addonID,
   namespace: pkg.config.addonRef,
-  updateURL: "",
-  xpiDownloadLink: "",
+  updateURL:
+    "https://raw.githubusercontent.com/zx33/zotero-cool-paper/main/update.json",
+  xpiDownloadLink: `https://github.com/zx33/zotero-cool-paper/releases/download/v${pkg.version}/zotero-cool-paper.xpi`,
 
   build: {
     assets: ["addon/**/*.*"],
@@ -16,6 +17,7 @@ export default defineConfig({
       ...pkg.config,
       author: pkg.author,
       description: pkg.description,
+      homepage: pkg.homepage,
       buildVersion: pkg.version,
       buildTime: "{{buildTime}}",
     },

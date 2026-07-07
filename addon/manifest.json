@@ -4,6 +4,7 @@
   "version": "__buildVersion__",
   "description": "__description__",
   "author": "__author__",
+  "homepage_url": "__homepage__",
   "icons": {
     "48": "content/icons/favicon@0.5x.png",
     "96": "content/icons/favicon.png"
@@ -12,7 +13,7 @@
     "zotero": {
       "id": "__addonID__",
       "strict_min_version": "7.0",
-      "strict_max_version": "9.*"
+      "strict_max_version": "9.0.*"
     }
   }
 }

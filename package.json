@@ -1,8 +1,9 @@
 {
   "name": "zotero-cool-paper",
   "type": "module",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Show papers.cool KIMI paper readings and related papers in the Zotero item pane.",
+  "homepage": "https://github.com/zx33/zotero-cool-paper",
   "config": {
     "addonName": "Zotero Cool Paper",
     "addonID": "zotero-cool-paper@andybear",
