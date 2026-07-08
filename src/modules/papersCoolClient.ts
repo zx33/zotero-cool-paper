@@ -25,7 +25,16 @@ export async function fetchKimiReading(
   reference: PaperReference,
   onProgress?: (partialHTML: string) => void,
 ) {
-  return requestText("POST", buildKimiURL(reference), onProgress, 240000);
+  const text = await requestText(
+    "POST",
+    buildKimiURL(reference),
+    onProgress,
+    240000,
+  );
+  if (!text.trim()) {
+    throw new Error("papers.cool returned empty KIMI content");
+  }
+  return text;
 }
 
 export async function fetchRelatedPapers(

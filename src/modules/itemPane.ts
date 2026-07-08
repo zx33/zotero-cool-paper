@@ -201,7 +201,7 @@ async function loadKimi(
       }
       lastRenderAt = now;
       try {
-        renderKimiHTML(state.kimiContainer, partial, true);
+        renderKimiContent(state.kimiContainer, partial, true);
       } catch (error) {
         ztoolkit.log("papers.cool KIMI streaming render failed", error);
       }
@@ -211,7 +211,7 @@ async function loadKimi(
       return { ok: true };
     }
 
-    renderKimiHTML(state.kimiContainer, kimiHTML);
+    renderKimiContent(state.kimiContainer, kimiHTML);
   } catch (error) {
     ztoolkit.log("papers.cool KIMI load failed", error);
     if (!isStale()) {
@@ -410,7 +410,7 @@ function createHeading(doc: Document, label: string) {
 
 function renderCachedContent(state: ShellState, cache?: CacheEntry) {
   if (cache?.kimiHTML) {
-    renderKimiHTML(state.kimiContainer, cache.kimiHTML);
+    renderKimiContent(state.kimiContainer, cache.kimiHTML);
   }
   if (cache?.related) {
     renderRelated(state, cache.related);
@@ -433,6 +433,38 @@ function renderKimiHTML(
   rewriteLinks(container);
   if (streaming) {
     const marker = ownerDocumentOf(container).createElement("p");
+    marker.className = "pcp-loading";
+    marker.textContent = "生成中...";
+    container.append(marker);
+  }
+}
+
+function renderKimiContent(
+  container: HTMLElement,
+  rawHTML: string,
+  streaming = false,
+) {
+  try {
+    renderKimiHTML(container, rawHTML, streaming);
+  } catch (error) {
+    ztoolkit.log("papers.cool KIMI rich render failed", error);
+    renderKimiTextFallback(container, rawHTML, streaming);
+  }
+}
+
+function renderKimiTextFallback(
+  container: HTMLElement,
+  rawHTML: string,
+  streaming = false,
+) {
+  container.replaceChildren();
+  const doc = ownerDocumentOf(container);
+  const pre = doc.createElement("pre");
+  pre.className = "pcp-kimi-fallback";
+  pre.textContent = rawHTML;
+  container.append(pre);
+  if (streaming) {
+    const marker = doc.createElement("p");
     marker.className = "pcp-loading";
     marker.textContent = "生成中...";
     container.append(marker);
@@ -507,9 +539,31 @@ function renderUnsupported(state: ShellState) {
 }
 
 function renderError(container: HTMLElement, error: unknown, prefix?: string) {
-  const message =
-    error instanceof Error ? error.message : "Unknown papers.cool error";
+  const message = errorMessage(error);
   container.textContent = prefix ? `${prefix}: ${message}` : message;
+}
+
+function errorMessage(error: unknown) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  if (error && typeof error === "object") {
+    const record = error as Record<string, unknown>;
+    const name = typeof record.name === "string" ? record.name : "";
+    const message = typeof record.message === "string" ? record.message : "";
+    if (name || message) {
+      return [name, message].filter(Boolean).join(": ");
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return "Unknown papers.cool error";
 }
 
 function contentStatusMessage(kimiOK: boolean, relatedOK: boolean) {

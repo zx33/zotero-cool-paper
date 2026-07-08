@@ -123,6 +123,11 @@
   background: var(--material-mix, #f6f6f6);
 }
 
+.pcp-kimi-fallback {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .pcp-loading {
   color: #b25b00;
   font-weight: 600;
