@@ -429,10 +429,11 @@ function renderKimiHTML(
     async: false,
     gfm: true,
   }) as string;
-  container.innerHTML = sanitizeHTML(rendered);
+  const doc = ownerDocumentOf(container);
+  container.replaceChildren(createSanitizedFragment(rendered, doc));
   rewriteLinks(container);
   if (streaming) {
-    const marker = ownerDocumentOf(container).createElement("p");
+    const marker = doc.createElement("p");
     marker.className = "pcp-loading";
     marker.textContent = "生成中...";
     container.append(marker);
@@ -583,25 +584,28 @@ function normalizeKimiHTML(text: string) {
   const urlRegex =
     /(\b(https?|ftp|file):\/\/[-A-Z0-9+&@#/%?=~_|!:,.;]*[-A-Z0-9+&@#/%=~_|])/gi;
   return text
+    .replace(/^<div\s+class=["']faq-a["']\s*>\s*$/gim, "")
+    .replace(/^<\/div>\s*$/gim, "")
     .replace(urlRegex, " $1 ")
     .replace(/---\n/g, "")
     .replace(/(-|\n)&gt;/g, "$1>")
     .replace(/&lt;(\/{0,1}[a-z]{2,4})&gt;/g, "<$1>");
 }
 
-function sanitizeHTML(html: string) {
-  const doc = new DOMParser().parseFromString(
+function createSanitizedFragment(html: string, targetDoc: Document) {
+  const parsedDoc = new DOMParser().parseFromString(
     `<main>${html}</main>`,
     "text/html",
   );
-  const root = doc.querySelector("main");
+  const root = parsedDoc.querySelector("main");
+  const fragment = targetDoc.createDocumentFragment();
   if (!root) {
-    return "";
+    return fragment;
   }
-  doc
+  parsedDoc
     .querySelectorAll("script, style, iframe, object, embed, link, meta, form")
     .forEach((node: Element) => node.remove());
-  doc.querySelectorAll("*").forEach((node: Element) => {
+  parsedDoc.querySelectorAll("*").forEach((node: Element) => {
     for (const attr of Array.from(node.attributes) as Attr[]) {
       const name = attr.name.toLowerCase();
       const value = attr.value.trim().toLowerCase();
@@ -614,7 +618,12 @@ function sanitizeHTML(html: string) {
       }
     }
   });
-  return root.innerHTML;
+  for (const child of Array.from(root.childNodes)) {
+    if (child) {
+      fragment.append(targetDoc.importNode(child, true));
+    }
+  }
+  return fragment;
 }
 
 function rewriteLinks(container: HTMLElement) {
