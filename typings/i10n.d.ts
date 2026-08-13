@@ -5,5 +5,7 @@
 export type FluentMessageId =
   | 'item-section-head-text'
   | 'item-section-sidenav-tooltip'
+  | 'local-rel-section-head-text'
+  | 'local-rel-section-sidenav-tooltip'
   | 'startup-begin'
   | 'startup-finish';

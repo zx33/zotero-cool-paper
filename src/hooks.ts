@@ -4,6 +4,10 @@ import {
   registerPapersCoolItemPane,
   unregisterPapersCoolItemPane,
 } from "./modules/itemPane";
+import {
+  registerLocalRelItemPane,
+  unregisterLocalRelItemPane,
+} from "./modules/localRel";
 import { createZToolkit } from "./utils/ztoolkit";
 
 async function onStartup() {
@@ -16,6 +20,7 @@ async function onStartup() {
   initLocale();
   await initPapersCoolCache();
   registerPapersCoolItemPane();
+  registerLocalRelItemPane();
 
   await Promise.all(
     Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
@@ -40,6 +45,7 @@ async function onMainWindowUnload(win: Window): Promise<void> {
 }
 
 function onShutdown(): void {
+  unregisterLocalRelItemPane();
   unregisterPapersCoolItemPane();
   ztoolkit.unregisterAll();
   addon.data.alive = false;

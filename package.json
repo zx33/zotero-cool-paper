@@ -1,8 +1,8 @@
 {
   "name": "zotero-cool-paper",
   "type": "module",
-  "version": "0.1.11",
-  "description": "Show papers.cool KIMI paper readings and related papers in the Zotero item pane.",
+  "version": "0.1.12",
+  "description": "Read papers.cool KIMI content and discover related papers in your local Zotero library.",
   "homepage": "https://github.com/zx33/zotero-cool-paper",
   "config": {
     "addonName": "Zotero Cool Paper",
@@ -22,6 +22,8 @@
     "kimi",
     "arxiv",
     "openreview",
+    "local-library",
+    "related-papers",
     "academic-research"
   ],
   "author": "AndyBear",
