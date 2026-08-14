@@ -1,7 +1,7 @@
 {
   "name": "zotero-cool-paper",
   "type": "module",
-  "version": "0.1.14",
+  "version": "0.1.15-beta.1",
   "description": "Read papers.cool KIMI content and discover related papers in your local Zotero library.",
   "homepage": "https://github.com/zx33/zotero-cool-paper",
   "config": {
