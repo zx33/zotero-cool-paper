@@ -185,6 +185,17 @@
   font-size: 11px;
 }
 
+.pcp-local-keyword[data-tier="core"] {
+  background: color-mix(in srgb, #6750a4 16%, transparent);
+  color: #6750a4;
+  font-weight: 600;
+}
+
+.pcp-local-keyword[data-tier="supporting"] {
+  background: var(--material-mix, #eee);
+  color: var(--fill-secondary, #666);
+}
+
 .pcp-local-results {
   display: grid;
   gap: 6px;

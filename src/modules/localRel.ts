@@ -1,89 +1,23 @@
 import { getLocaleID } from "../utils/locale";
+import {
+  extractLocalKeywords,
+  keywordSearchTerms,
+  localKeywordIDF,
+  scoreKeywordMatches,
+  type KeywordTextIndex,
+  type LocalRelKeyword,
+  type LocalRelMatch,
+  type LocalRelMatchField,
+} from "./localRelRanking";
 
 const PANE_ID = "zoterocoolpaper-local-rel";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
-const MAX_KEYWORDS = 12;
 const MAX_RESULTS = 20;
-const MAX_TAG_KEYWORDS = 6;
-
-const LOCAL_REL_STOPWORDS = new Set([
-  "about",
-  "after",
-  "against",
-  "also",
-  "and",
-  "among",
-  "are",
-  "analysis",
-  "an",
-  "approach",
-  "the",
-  "based",
-  "before",
-  "between",
-  "both",
-  "but",
-  "for",
-  "its",
-  "could",
-  "data",
-  "dedicated",
-  "during",
-  "each",
-  "from",
-  "have",
-  "into",
-  "not",
-  "of",
-  "on",
-  "our",
-  "more",
-  "most",
-  "other",
-  "paper",
-  "results",
-  "show",
-  "study",
-  "such",
-  "than",
-  "that",
-  "their",
-  "these",
-  "they",
-  "this",
-  "those",
-  "through",
-  "to",
-  "toward",
-  "using",
-  "various",
-  "were",
-  "which",
-  "while",
-  "with",
-  "within",
-  "without",
-  "would",
-]);
-
-type MatchField = "title" | "tag" | "abstract" | "fulltext";
-
-export interface LocalRelMatch {
-  keyword: string;
-  field: MatchField;
-  weight: number;
-}
 
 export interface LocalRelResult {
   item: Zotero.Item;
   score: number;
   matches: LocalRelMatch[];
-}
-
-export interface KeywordTextIndex {
-  title: string;
-  abstract: string;
-  tags: string[];
 }
 
 export function registerLocalRelItemPane() {
@@ -119,90 +53,6 @@ export function registerLocalRelItemPane() {
 
 export function unregisterLocalRelItemPane() {
   Zotero.ItemPaneManager.unregisterSection(PANE_ID);
-}
-
-export function extractLocalKeywords(index: KeywordTextIndex) {
-  const seen = new Set<string>();
-  const keywords: string[] = [];
-  const addKeyword = (value: string) => {
-    const keyword = value.trim().replace(/^['"]|['"]$/g, "");
-    const normalized = normalizeText(keyword);
-    if (
-      !normalized ||
-      seen.has(normalized) ||
-      LOCAL_REL_STOPWORDS.has(normalized)
-    ) {
-      return;
-    }
-    seen.add(normalized);
-    keywords.push(keyword);
-  };
-
-  for (const tag of index.tags.slice(0, MAX_TAG_KEYWORDS)) {
-    addKeyword(tag);
-  }
-
-  for (const token of contentTokens(index.title)) {
-    if (keywords.length >= MAX_KEYWORDS) {
-      return keywords;
-    }
-    addKeyword(token);
-  }
-
-  const frequency = new Map<string, { token: string; count: number }>();
-  for (const token of contentTokens(index.abstract)) {
-    const normalized = normalizeText(token);
-    const entry = frequency.get(normalized);
-    frequency.set(normalized, {
-      token: entry?.token ?? token,
-      count: (entry?.count ?? 0) + 1,
-    });
-  }
-  for (const { token } of [...frequency.values()].sort(
-    (a, b) => b.count - a.count,
-  )) {
-    if (keywords.length >= MAX_KEYWORDS) {
-      break;
-    }
-    addKeyword(token);
-  }
-  return keywords;
-}
-
-export function scoreKeywordMatches(
-  index: KeywordTextIndex,
-  searchedKeywords: string[],
-) {
-  const title = normalizeText(index.title);
-  const abstract = normalizeText(index.abstract);
-  const tags = index.tags.map(normalizeText);
-  const matches: LocalRelMatch[] = [];
-
-  for (const keyword of searchedKeywords) {
-    const normalized = normalizeText(keyword);
-    if (!normalized) {
-      continue;
-    }
-
-    let field: MatchField = "fulltext";
-    let weight = 1;
-    if (title.includes(normalized)) {
-      field = "title";
-      weight = 4;
-    } else if (tags.some((tag) => tag.includes(normalized))) {
-      field = "tag";
-      weight = 3;
-    } else if (abstract.includes(normalized)) {
-      field = "abstract";
-      weight = 2;
-    }
-    matches.push({ keyword, field, weight });
-  }
-
-  return {
-    score: matches.reduce((total, match) => total + match.weight, 0),
-    matches,
-  };
 }
 
 async function renderLocalRel(
@@ -260,21 +110,24 @@ async function renderLocalRel(
 
 async function searchLocalLibrary(
   sourceItem: Zotero.Item,
-  keywords: string[],
+  keywords: LocalRelKeyword[],
 ): Promise<LocalRelResult[]> {
-  const hitsByItemID = new Map<number, Set<string>>();
+  const hitsByItemID = new Map<number, Map<string, LocalRelKeyword>>();
+  const itemIDsByKeyword = new Map<string, Set<number>>();
 
   const searches = await Promise.all(
-    keywords.map(async (keyword) => {
-      try {
-        const search = new Zotero.Search({ libraryID: sourceItem.libraryID });
-        search.addCondition("quicksearch-everything", "contains", keyword);
-        return { keyword, ids: await search.search() };
-      } catch (error) {
-        ztoolkit.log(`Local REL search failed for keyword: ${keyword}`, error);
-        return { keyword, ids: [] as number[] };
-      }
-    }),
+    keywords.flatMap((keyword) =>
+      keywordSearchTerms(keyword).map(async (term) => {
+        try {
+          const search = new Zotero.Search({ libraryID: sourceItem.libraryID });
+          search.addCondition("quicksearch-everything", "contains", term);
+          return { keyword, term, ids: await search.search() };
+        } catch (error) {
+          ztoolkit.log(`Local REL search failed for keyword: ${term}`, error);
+          return { keyword, term, ids: [] as number[] };
+        }
+      }),
+    ),
   );
 
   for (const { keyword, ids } of searches) {
@@ -288,29 +141,46 @@ async function searchLocalLibrary(
       ) {
         continue;
       }
-      const hits = hitsByItemID.get(item.id) ?? new Set<string>();
-      hits.add(keyword);
+      const keywordItemIDs =
+        itemIDsByKeyword.get(keyword.id) ?? new Set<number>();
+      keywordItemIDs.add(item.id);
+      itemIDsByKeyword.set(keyword.id, keywordItemIDs);
+
+      const hits =
+        hitsByItemID.get(item.id) ?? new Map<string, LocalRelKeyword>();
+      hits.set(keyword.id, keyword);
       hitsByItemID.set(item.id, hits);
     }
   }
 
+  const maximumDocumentFrequency = Math.max(
+    1,
+    ...[...itemIDsByKeyword.values()].map((itemIDs) => itemIDs.size),
+  );
   const results: LocalRelResult[] = [];
   for (const [itemID, searchedKeywords] of hitsByItemID) {
     const item = Zotero.Items.get(itemID);
     if (!item?.isRegularItem?.()) {
       continue;
     }
-    const ranked = scoreKeywordMatches(itemTextIndex(item), [
-      ...searchedKeywords,
-    ]);
-    results.push({ item, ...ranked });
+    const weightedKeywords = [...searchedKeywords.values()].map((keyword) => ({
+      keyword,
+      idf: localKeywordIDF(
+        itemIDsByKeyword.get(keyword.id)?.size ?? 0,
+        maximumDocumentFrequency,
+      ),
+    }));
+    const ranked = scoreKeywordMatches(itemTextIndex(item), weightedKeywords);
+    if (ranked.qualifies) {
+      results.push({ item, score: ranked.score, matches: ranked.matches });
+    }
   }
 
   return results
     .sort(
       (a, b) =>
         b.score - a.score ||
-        b.matches.length - a.matches.length ||
+        exactMatchCount(b) - exactMatchCount(a) ||
         itemYear(b.item) - itemYear(a.item) ||
         getField(a.item, "title").localeCompare(getField(b.item, "title")),
     )
@@ -382,7 +252,10 @@ function getShellState(body: HTMLElement): LocalRelShellState {
   };
 }
 
-function renderKeywords(state: LocalRelShellState, keywords: string[]) {
+function renderKeywords(
+  state: LocalRelShellState,
+  keywords: LocalRelKeyword[],
+) {
   state.keywords.replaceChildren();
   if (!keywords.length) {
     return;
@@ -393,7 +266,11 @@ function renderKeywords(state: LocalRelShellState, keywords: string[]) {
   state.keywords.append(label);
   for (const keyword of keywords) {
     const chip = createHTML(doc, "span", "pcp-local-keyword");
-    chip.textContent = keyword;
+    chip.dataset.tier = keyword.tier;
+    chip.textContent = keyword.aliases.length
+      ? `${keyword.label} (${keyword.aliases.join("/")})`
+      : keyword.label;
+    chip.title = keywordTierLabel(keyword.tier);
     state.keywords.append(chip);
   }
 }
@@ -405,7 +282,7 @@ function renderResults(
 ) {
   state.results.replaceChildren();
   if (!results.length) {
-    renderEmpty(state, "没有找到包含这些关键词的本地论文。");
+    renderEmpty(state, "没有找到达到主题相关性门槛的本地论文。");
     return;
   }
 
@@ -467,7 +344,9 @@ function createResultRow(doc: Document, result: LocalRelResult) {
   meta.textContent = itemMeta(result.item);
   const matches = createHTML(doc, "div", "pcp-local-result-matches");
   matches.textContent = result.matches
-    .map((match) => `${match.keyword} · ${matchFieldLabel(match.field)}`)
+    .filter((match) => match.exactMetadataMatch)
+    .slice(0, 8)
+    .map((match) => `${match.keyword.label} · ${matchFieldLabel(match.field)}`)
     .join(" / ");
   row.append(title);
   if (meta.textContent) {
@@ -557,7 +436,11 @@ function itemYear(item: Zotero.Item) {
   return match ? Number(match[0]) : 0;
 }
 
-function matchFieldLabel(field: MatchField) {
+function exactMatchCount(result: LocalRelResult) {
+  return result.matches.filter((match) => match.exactMetadataMatch).length;
+}
+
+function matchFieldLabel(field: LocalRelMatchField) {
   return {
     title: "标题",
     tag: "标签",
@@ -566,21 +449,12 @@ function matchFieldLabel(field: MatchField) {
   }[field];
 }
 
-function normalizeText(value: string) {
-  return value.normalize("NFKC").trim().toLocaleLowerCase();
-}
-
-function contentTokens(value: string) {
-  return (
-    value.normalize("NFKC").match(/[\p{L}\p{N}][\p{L}\p{N}-]*/gu) ?? []
-  ).filter((token) => {
-    const normalized = normalizeText(token);
-    return (
-      !LOCAL_REL_STOPWORDS.has(normalized) &&
-      !/^\d+$/.test(normalized) &&
-      (normalized.length >= 3 || /^[A-Z\d]{2,}$/.test(token))
-    );
-  });
+function keywordTierLabel(tier: LocalRelKeyword["tier"]) {
+  return {
+    core: "核心短语或实体",
+    domain: "领域关键词",
+    supporting: "辅助关键词",
+  }[tier];
 }
 
 function getField(item: Zotero.Item, field: string) {
