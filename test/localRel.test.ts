@@ -43,6 +43,28 @@ describe("Local REL keyword ranking", function () {
     assert.equal(buildLocalSearchQuery("KG"), "KG");
   });
 
+  it("ignores workflow tags before selecting useful research tags", function () {
+    const labels = extractLocalKeywords({
+      title: "",
+      abstract: "",
+      tags: [
+        "paper",
+        "to-read",
+        "read later",
+        "重要",
+        "drug repurposing",
+        "PharmKG",
+      ],
+    }).map((keyword) => keyword.label);
+
+    assert.notInclude(labels, "paper");
+    assert.notInclude(labels, "to-read");
+    assert.notInclude(labels, "read later");
+    assert.notInclude(labels, "重要");
+    assert.include(labels, "drug repurposing");
+    assert.include(labels, "PharmKG");
+  });
+
   it("normalizes whitespace and quotes before building a phrase search", function () {
     assert.equal(
       buildLocalSearchQuery('  knowledge   "graph"  '),

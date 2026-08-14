@@ -86,6 +86,33 @@ const BROAD_SINGLE_TERMS = new Set([
   "system",
 ]);
 
+const WORKFLOW_TAGS = new Set([
+  "done",
+  "favorite",
+  "favourite",
+  "important",
+  "needs review",
+  "needs-review",
+  "read later",
+  "read-later",
+  "reviewed",
+  "starred",
+  "to do",
+  "to read",
+  "to-do",
+  "to-read",
+  "todo",
+  "unread",
+  "完成",
+  "已读",
+  "待办",
+  "待读",
+  "待读论文",
+  "收藏",
+  "稍后阅读",
+  "重要",
+]);
+
 export type LocalRelKeywordTier = "core" | "domain" | "supporting";
 export type LocalRelMatchField = "title" | "tag" | "abstract" | "fulltext";
 
@@ -159,13 +186,25 @@ export function extractLocalKeywords(index: KeywordTextIndex) {
     return true;
   };
 
-  for (const tag of index.tags.slice(0, MAX_TAG_KEYWORDS)) {
+  let acceptedTagCount = 0;
+  for (const tag of index.tags) {
+    if (WORKFLOW_TAGS.has(normalizeKeywordText(tag))) {
+      continue;
+    }
     const tagTokens = contentTokens(tag);
-    if (!tagTokens.length) {
+    if (
+      !tagTokens.length ||
+      (tagTokens.length === 1 && !isStandaloneToken(tagTokens[0]))
+    ) {
       continue;
     }
     const kind = tagTokens.length > 1 ? "phrase" : "term";
-    addKeyword(tag, kind === "phrase" ? "core" : "domain", kind);
+    if (addKeyword(tag, kind === "phrase" ? "core" : "domain", kind)) {
+      acceptedTagCount += 1;
+      if (acceptedTagCount >= MAX_TAG_KEYWORDS) {
+        break;
+      }
+    }
   }
 
   const titleTokens = tokenize(index.title);
@@ -303,9 +342,6 @@ export function scoreKeywordMatches(
   const exactDomain = matches.filter(
     (match) => match.keyword.tier === "domain" && match.exactMetadataMatch,
   );
-  const hasCoreKeyword = searchedKeywords.some(
-    ({ keyword }) => keyword.tier === "core",
-  );
   const hasStrongDomainField = exactDomain.some(
     (match) => match.field === "title" || match.field === "tag",
   );
@@ -313,9 +349,7 @@ export function scoreKeywordMatches(
   const score =
     matches.reduce((total, match) => total + match.weight, 0) + coverageBonus;
   const topicGate =
-    exactCore.length > 0 ||
-    (hasCoreKeyword && exactDomain.length >= 2 && hasStrongDomainField) ||
-    (!hasCoreKeyword && exactDomain.length >= 2 && hasStrongDomainField);
+    exactCore.length > 0 || (exactDomain.length >= 2 && hasStrongDomainField);
 
   return {
     score: Math.round(score * 100) / 100,
@@ -326,14 +360,14 @@ export function scoreKeywordMatches(
 
 export function localKeywordIDF(
   documentFrequency: number,
-  maximumDocumentFrequency: number,
+  documentCount: number,
 ) {
-  if (documentFrequency <= 0 || maximumDocumentFrequency <= 0) {
+  if (documentFrequency <= 0 || documentCount <= 0) {
     return 1;
   }
   return Math.min(
     3,
-    1 + Math.log((maximumDocumentFrequency + 1) / (documentFrequency + 1)),
+    1 + Math.log((documentCount + 1) / (documentFrequency + 1)),
   );
 }
 

@@ -1,4 +1,5 @@
 import { getLocaleID } from "../utils/locale";
+import { mapWithConcurrency } from "./asyncPool";
 import {
   buildLocalSearchQuery,
   extractLocalKeywords,
@@ -14,6 +15,18 @@ import {
 const PANE_ID = "zoterocoolpaper-local-rel";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const MAX_RESULTS = 20;
+const LOCAL_SEARCH_CONCURRENCY = 4;
+const LOCAL_SEARCH_CACHE_TTL_MS = 60 * 1000;
+const LOCAL_SEARCH_CACHE_MAX_ENTRIES = 200;
+
+const localSearchCache = new Map<
+  string,
+  { ids: number[]; expiresAt: number }
+>();
+const libraryDocumentCountCache = new Map<
+  number,
+  { count: number; expiresAt: number }
+>();
 
 export interface LocalRelResult {
   item: Zotero.Item;
@@ -47,7 +60,7 @@ export function registerLocalRelItemPane() {
       if (!item) {
         return;
       }
-      await renderLocalRel(body, item, setSectionSummary);
+      await renderLocalRel(body, item, setSectionSummary, false);
     },
   });
 }
@@ -60,6 +73,7 @@ async function renderLocalRel(
   body: HTMLElement,
   sourceItem: Zotero.Item,
   setSectionSummary?: (summary: string) => void,
+  forceRefresh = false,
 ) {
   const token = Zotero.Utilities.randomString(8);
   body.dataset.pcpLocalRenderToken = token;
@@ -76,7 +90,7 @@ async function renderLocalRel(
   };
 
   state.refreshButton.addEventListener("click", () => {
-    void renderLocalRel(body, sourceItem, setSectionSummary);
+    void renderLocalRel(body, sourceItem, setSectionSummary, true);
   });
 
   try {
@@ -90,7 +104,11 @@ async function renderLocalRel(
     }
 
     setStatus(`正在当前资料库中检索 ${keywords.length} 个关键词...`);
-    const results = await searchLocalLibrary(sourceItem, keywords);
+    const results = await searchLocalLibrary(
+      sourceItem,
+      keywords,
+      forceRefresh,
+    );
     if (isStale()) {
       return;
     }
@@ -112,32 +130,33 @@ async function renderLocalRel(
 async function searchLocalLibrary(
   sourceItem: Zotero.Item,
   keywords: LocalRelKeyword[],
+  forceRefresh: boolean,
 ): Promise<LocalRelResult[]> {
   const hitsByItemID = new Map<number, Map<string, LocalRelKeyword>>();
   const itemIDsByKeyword = new Map<string, Set<number>>();
+  const searchTerms = keywords.flatMap((keyword) =>
+    keywordSearchTerms(keyword).map((term) => ({ keyword, term })),
+  );
 
   const [searches, libraryDocumentCount] = await Promise.all([
-    Promise.all(
-      keywords.flatMap((keyword) =>
-        keywordSearchTerms(keyword).map(async (term) => {
-          try {
-            const search = new Zotero.Search({
-              libraryID: sourceItem.libraryID,
-            });
-            search.addCondition(
-              "quicksearch-everything",
-              "contains",
-              buildLocalSearchQuery(term),
-            );
-            return { keyword, term, ids: await search.search() };
-          } catch (error) {
-            ztoolkit.log(`Local REL search failed for keyword: ${term}`, error);
-            return { keyword, term, ids: [] as number[] };
-          }
-        }),
-      ),
+    mapWithConcurrency(
+      searchTerms,
+      LOCAL_SEARCH_CONCURRENCY,
+      async ({ keyword, term }) => {
+        try {
+          const ids = await searchLocalItems(
+            sourceItem.libraryID,
+            term,
+            forceRefresh,
+          );
+          return { keyword, term, ids };
+        } catch (error) {
+          ztoolkit.log(`Local REL search failed for keyword: ${term}`, error);
+          return { keyword, term, ids: [] as number[] };
+        }
+      },
     ),
-    countLibraryDocuments(sourceItem),
+    countLibraryDocuments(sourceItem, forceRefresh),
   ]);
 
   for (const { keyword, ids } of searches) {
@@ -213,15 +232,75 @@ function regularParentItem(item: Zotero.Item | false | undefined) {
   return undefined;
 }
 
-async function countLibraryDocuments(sourceItem: Zotero.Item) {
+async function searchLocalItems(
+  libraryID: number,
+  term: string,
+  forceRefresh: boolean,
+) {
+  const query = buildLocalSearchQuery(term);
+  const cacheKey = `${libraryID}:${query}`;
+  const cached = getLocalSearchCache(cacheKey, forceRefresh);
+  if (cached) {
+    return cached;
+  }
+
+  const search = new Zotero.Search({ libraryID });
+  search.addCondition("quicksearch-everything", "contains", query);
+  const ids = await search.search();
+  setLocalSearchCache(cacheKey, ids);
+  return ids;
+}
+
+function getLocalSearchCache(cacheKey: string, forceRefresh: boolean) {
+  if (forceRefresh) {
+    return undefined;
+  }
+  const cached = localSearchCache.get(cacheKey);
+  if (!cached || cached.expiresAt <= Date.now()) {
+    localSearchCache.delete(cacheKey);
+    return undefined;
+  }
+  localSearchCache.delete(cacheKey);
+  localSearchCache.set(cacheKey, cached);
+  return [...cached.ids];
+}
+
+function setLocalSearchCache(cacheKey: string, ids: number[]) {
+  localSearchCache.delete(cacheKey);
+  while (localSearchCache.size >= LOCAL_SEARCH_CACHE_MAX_ENTRIES) {
+    const oldestKey = localSearchCache.keys().next().value;
+    if (oldestKey === undefined) {
+      break;
+    }
+    localSearchCache.delete(oldestKey);
+  }
+  localSearchCache.set(cacheKey, {
+    ids: [...ids],
+    expiresAt: Date.now() + LOCAL_SEARCH_CACHE_TTL_MS,
+  });
+}
+
+async function countLibraryDocuments(
+  sourceItem: Zotero.Item,
+  forceRefresh: boolean,
+) {
+  const cached = libraryDocumentCountCache.get(sourceItem.libraryID);
+  if (!forceRefresh && cached && cached.expiresAt > Date.now()) {
+    return cached.count;
+  }
   try {
     const items = await Zotero.Items.getAll(sourceItem.libraryID, true, false);
-    return Math.max(
+    const count = Math.max(
       1,
       items.filter(
         (item) => item.id !== sourceItem.id && item.isRegularItem?.(),
       ).length,
     );
+    libraryDocumentCountCache.set(sourceItem.libraryID, {
+      count,
+      expiresAt: Date.now() + LOCAL_SEARCH_CACHE_TTL_MS,
+    });
+    return count;
   } catch (error) {
     ztoolkit.log("Local REL failed to count library documents", error);
     return undefined;
