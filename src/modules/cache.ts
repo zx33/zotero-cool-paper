@@ -1,8 +1,19 @@
 import type { CacheEntry, PaperReference, PapersCoolBranch } from "./types";
 
 const TABLE_NAME = "paperscool_cache";
+const UPDATED_AT_INDEX = "paperscool_cache_updated_at";
+const DAY_MS = 24 * 60 * 60 * 1000;
+const CACHE_MAX_ROWS = 500;
+const CACHE_ROW_RETENTION_MS = 90 * DAY_MS;
+
+export const CACHE_TTL_MS = {
+  metadata: 7 * DAY_MS,
+  kimi: 30 * DAY_MS,
+  related: 7 * DAY_MS,
+} as const;
 
 let initialized = false;
+let writeQueue: Promise<void> = Promise.resolve();
 
 export async function initPapersCoolCache() {
   if (initialized) {
@@ -23,6 +34,10 @@ export async function initPapersCoolCache() {
       updated_at INTEGER NOT NULL
     )
   `);
+  await Zotero.DB.queryAsync(
+    `CREATE INDEX IF NOT EXISTS ${UPDATED_AT_INDEX} ON ${TABLE_NAME}(updated_at)`,
+  );
+  await pruneCacheRows();
 
   initialized = true;
 }
@@ -44,10 +59,55 @@ export async function getCache(
     return undefined;
   }
 
-  return rowToCache(rows[0]);
+  return applyCacheTTL(rowToCache(rows[0]));
 }
 
-export async function saveCachePatch(
+export function saveCachePatch(
+  reference: Pick<PaperReference, "branch" | "key">,
+  patch: Partial<CacheEntry>,
+) {
+  return enqueueWrite(() => saveCachePatchNow(reference, patch));
+}
+
+export function clearPapersCoolCache() {
+  return enqueueWrite(async () => {
+    await initPapersCoolCache();
+    await Zotero.DB.queryAsync(`DELETE FROM ${TABLE_NAME}`);
+  });
+}
+
+export function applyCacheTTL(cache: CacheEntry, now = Date.now()) {
+  const metadataFresh = isFresh(
+    cache.metadata,
+    cache.metadataFetchedAt,
+    CACHE_TTL_MS.metadata,
+    now,
+  );
+  const kimiFresh = isFresh(
+    cache.kimiHTML,
+    cache.kimiFetchedAt,
+    CACHE_TTL_MS.kimi,
+    now,
+  );
+  const relatedFresh = isFresh(
+    cache.related,
+    cache.relatedFetchedAt,
+    CACHE_TTL_MS.related,
+    now,
+  );
+
+  return {
+    ...cache,
+    metadata: metadataFresh ? cache.metadata : undefined,
+    metadataFetchedAt: metadataFresh ? cache.metadataFetchedAt : undefined,
+    kimiHTML: kimiFresh ? cache.kimiHTML : undefined,
+    kimiFetchedAt: kimiFresh ? cache.kimiFetchedAt : undefined,
+    related: relatedFresh ? cache.related : undefined,
+    relatedFetchedAt: relatedFresh ? cache.relatedFetchedAt : undefined,
+  };
+}
+
+async function saveCachePatchNow(
   reference: Pick<PaperReference, "branch" | "key">,
   patch: Partial<CacheEntry>,
 ) {
@@ -105,6 +165,42 @@ export async function saveCachePatch(
       next.relatedFetchedAt ?? null,
       next.updatedAt ?? Date.now(),
     ],
+  );
+  await pruneCacheRows();
+}
+
+async function pruneCacheRows(now = Date.now()) {
+  await Zotero.DB.queryAsync(`DELETE FROM ${TABLE_NAME} WHERE updated_at < ?`, [
+    now - CACHE_ROW_RETENTION_MS,
+  ]);
+  await Zotero.DB.queryAsync(`
+    DELETE FROM ${TABLE_NAME}
+    WHERE cache_key IN (
+      SELECT cache_key
+      FROM ${TABLE_NAME}
+      ORDER BY updated_at DESC, cache_key ASC
+      LIMIT -1 OFFSET ${CACHE_MAX_ROWS}
+    )
+  `);
+}
+
+function enqueueWrite<T>(operation: () => Promise<T>) {
+  const result = writeQueue.then(operation, operation);
+  writeQueue = result.then(
+    () => undefined,
+    () => undefined,
+  );
+  return result;
+}
+
+function isFresh(
+  value: unknown,
+  fetchedAt: number | undefined,
+  ttl: number,
+  now: number,
+) {
+  return (
+    value !== undefined && fetchedAt !== undefined && now - fetchedAt < ttl
   );
 }
 

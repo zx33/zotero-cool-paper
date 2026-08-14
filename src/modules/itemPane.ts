@@ -1,6 +1,6 @@
 import { marked } from "marked";
 import { getLocaleID } from "../utils/locale";
-import { getCache, saveCachePatch } from "./cache";
+import { clearPapersCoolCache, getCache, saveCachePatch } from "./cache";
 import { getItemTitle, identifyPaperFromItem } from "./identifier";
 import {
   buildPaperURL,
@@ -78,6 +78,23 @@ async function renderItem(
 
   state.refreshButton.addEventListener("click", () => {
     void renderItem(body, item, true, setSectionSummary);
+  });
+  state.clearCacheButton.addEventListener("click", () => {
+    state.clearCacheButton.disabled = true;
+    setStatus("正在清空 papers.cool 缓存...");
+    void clearPapersCoolCache()
+      .then(async () => {
+        if (!isStale()) {
+          await renderItem(body, item, true, setSectionSummary);
+        }
+      })
+      .catch((error) => {
+        ztoolkit.log("Failed to clear papers.cool cache", error);
+        if (!isStale()) {
+          state.clearCacheButton.disabled = false;
+          setStatus("清空缓存失败", "warn");
+        }
+      });
   });
 
   try {
@@ -290,9 +307,10 @@ function ensureShell(body: HTMLElement, reset = false) {
 
   const toolbar = createHTML(doc, "div", "pcp-toolbar");
   const refresh = createButton(doc, "刷新", "pcp-refresh");
+  const clearCache = createButton(doc, "清空缓存", "pcp-clear-cache");
   const openPaper = createButton(doc, "打开论文页", "pcp-open-paper", true);
   const openRelated = createButton(doc, "打开 REL", "pcp-open-related", true);
-  toolbar.append(refresh, openPaper, openRelated);
+  toolbar.append(refresh, clearCache, openPaper, openRelated);
 
   const status = createHTML(doc, "div", "pcp-status");
   status.dataset.tone = "idle";
@@ -324,6 +342,7 @@ function getShellState(body: HTMLElement): ShellState {
     status: mustQuery<HTMLElement>(body, ".pcp-status"),
     meta: mustQuery<HTMLElement>(body, ".pcp-meta"),
     refreshButton: mustQuery<HTMLButtonElement>(body, ".pcp-refresh"),
+    clearCacheButton: mustQuery<HTMLButtonElement>(body, ".pcp-clear-cache"),
     openPaperButton: mustQuery<HTMLButtonElement>(body, ".pcp-open-paper"),
     openRelatedButton: mustQuery<HTMLButtonElement>(body, ".pcp-open-related"),
     relatedSummary: mustQuery<HTMLElement>(body, ".pcp-related-summary-line"),
@@ -669,6 +688,7 @@ interface ShellState {
   status: HTMLElement;
   meta: HTMLElement;
   refreshButton: HTMLButtonElement;
+  clearCacheButton: HTMLButtonElement;
   openPaperButton: HTMLButtonElement;
   openRelatedButton: HTMLButtonElement;
   relatedSummary: HTMLElement;
