@@ -1,5 +1,6 @@
 import { assert } from "chai";
 import {
+  buildLocalSearchQuery,
   extractLocalKeywords,
   localKeywordIDF,
   normalizeKeywordText,
@@ -34,6 +35,18 @@ describe("Local REL keyword ranking", function () {
     assert.equal(
       normalizeKeywordText("Knowledge graphs"),
       normalizeKeywordText("knowledge graph"),
+    );
+  });
+
+  it("quotes multi-word Zotero searches but keeps aliases unquoted", function () {
+    assert.equal(buildLocalSearchQuery("knowledge graph"), '"knowledge graph"');
+    assert.equal(buildLocalSearchQuery("KG"), "KG");
+  });
+
+  it("normalizes whitespace and quotes before building a phrase search", function () {
+    assert.equal(
+      buildLocalSearchQuery('  knowledge   "graph"  '),
+      '"knowledge graph"',
     );
   });
 

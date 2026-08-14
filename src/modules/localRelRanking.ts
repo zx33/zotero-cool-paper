@@ -341,6 +341,11 @@ export function keywordSearchTerms(keyword: LocalRelKeyword) {
   return [keyword.label, ...keyword.aliases];
 }
 
+export function buildLocalSearchQuery(term: string) {
+  const cleaned = term.replace(/"/g, " ").replace(/\s+/g, " ").trim();
+  return cleaned.includes(" ") ? `"${cleaned}"` : cleaned;
+}
+
 export function normalizeKeywordText(value: string) {
   return tokenize(value)
     .map((token) => token.normalized)

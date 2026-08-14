@@ -1,5 +1,6 @@
 import { getLocaleID } from "../utils/locale";
 import {
+  buildLocalSearchQuery,
   extractLocalKeywords,
   keywordSearchTerms,
   localKeywordIDF,
@@ -115,20 +116,29 @@ async function searchLocalLibrary(
   const hitsByItemID = new Map<number, Map<string, LocalRelKeyword>>();
   const itemIDsByKeyword = new Map<string, Set<number>>();
 
-  const searches = await Promise.all(
-    keywords.flatMap((keyword) =>
-      keywordSearchTerms(keyword).map(async (term) => {
-        try {
-          const search = new Zotero.Search({ libraryID: sourceItem.libraryID });
-          search.addCondition("quicksearch-everything", "contains", term);
-          return { keyword, term, ids: await search.search() };
-        } catch (error) {
-          ztoolkit.log(`Local REL search failed for keyword: ${term}`, error);
-          return { keyword, term, ids: [] as number[] };
-        }
-      }),
+  const [searches, libraryDocumentCount] = await Promise.all([
+    Promise.all(
+      keywords.flatMap((keyword) =>
+        keywordSearchTerms(keyword).map(async (term) => {
+          try {
+            const search = new Zotero.Search({
+              libraryID: sourceItem.libraryID,
+            });
+            search.addCondition(
+              "quicksearch-everything",
+              "contains",
+              buildLocalSearchQuery(term),
+            );
+            return { keyword, term, ids: await search.search() };
+          } catch (error) {
+            ztoolkit.log(`Local REL search failed for keyword: ${term}`, error);
+            return { keyword, term, ids: [] as number[] };
+          }
+        }),
+      ),
     ),
-  );
+    countLibraryDocuments(sourceItem),
+  ]);
 
   for (const { keyword, ids } of searches) {
     for (const id of ids) {
@@ -153,10 +163,12 @@ async function searchLocalLibrary(
     }
   }
 
-  const maximumDocumentFrequency = Math.max(
-    1,
-    ...[...itemIDsByKeyword.values()].map((itemIDs) => itemIDs.size),
-  );
+  const documentCount =
+    libraryDocumentCount ??
+    Math.max(
+      1,
+      ...[...itemIDsByKeyword.values()].map((itemIDs) => itemIDs.size),
+    );
   const results: LocalRelResult[] = [];
   for (const [itemID, searchedKeywords] of hitsByItemID) {
     const item = Zotero.Items.get(itemID);
@@ -167,7 +179,7 @@ async function searchLocalLibrary(
       keyword,
       idf: localKeywordIDF(
         itemIDsByKeyword.get(keyword.id)?.size ?? 0,
-        maximumDocumentFrequency,
+        documentCount,
       ),
     }));
     const ranked = scoreKeywordMatches(itemTextIndex(item), weightedKeywords);
@@ -199,6 +211,21 @@ function regularParentItem(item: Zotero.Item | false | undefined) {
     return parent?.isRegularItem?.() ? parent : undefined;
   }
   return undefined;
+}
+
+async function countLibraryDocuments(sourceItem: Zotero.Item) {
+  try {
+    const items = await Zotero.Items.getAll(sourceItem.libraryID, true, false);
+    return Math.max(
+      1,
+      items.filter(
+        (item) => item.id !== sourceItem.id && item.isRegularItem?.(),
+      ).length,
+    );
+  } catch (error) {
+    ztoolkit.log("Local REL failed to count library documents", error);
+    return undefined;
+  }
 }
 
 function itemTextIndex(item: Zotero.Item): KeywordTextIndex {
