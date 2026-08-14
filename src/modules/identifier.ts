@@ -3,8 +3,11 @@ import type { PaperReference } from "./types";
 const PAPERS_COOL_URL_RE =
   /papers\.cool\/(arxiv|venue)\/(?!search\b|kimi\b)([^?#\s]+)/i;
 const ARXIV_RE =
-  /(?:arxiv:|arxiv\s+id[:\s]*|arxiv\.org\/(?:abs|pdf)\/|10\.48550\/arxiv\.)([a-z-]+\/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?/i;
-const LOOSE_ARXIV_RE = /\b(\d{4}\.\d{4,5})(?:v\d+)?\b/;
+  /(?:arxiv(?::[ \t]*|[ \t]+id(?:[ \t]*:[ \t]*|[ \t]+))|arxiv\.org\/(?:abs|pdf)\/|10\.48550\/arxiv\.)([a-z-]+\/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?/gi;
+const BARE_ARXIV_RE =
+  /^\s*([a-z-]+\/\d{7}|\d{4}\.\d{4,5})(?:v\d+)?(?:\.pdf)?\s*$/i;
+const MODERN_ARXIV_ID_RE = /^\d{2}(?:0[1-9]|1[0-2])\.\d{4,5}$/;
+const LEGACY_ARXIV_ID_RE = /^[a-z-]+\/\d{7}$/i;
 const OPENREVIEW_URL_RE =
   /openreview\.net\/(?:forum|pdf)\?id=([A-Za-z0-9_-]+)/i;
 const OPENREVIEW_KEY_RE = /\b([A-Za-z0-9_-]{6,})@OpenReview\b/;
@@ -12,7 +15,7 @@ const OPENREVIEW_KEY_RE = /\b([A-Za-z0-9_-]{6,})@OpenReview\b/;
 export function identifyPaperFromItem(
   item: Zotero.Item,
 ): PaperReference | null {
-  const text = collectItemText(item);
+  const { text, bareArxivCandidates } = collectItemSignals(item);
 
   const papersCoolMatch = text.match(PAPERS_COOL_URL_RE);
   if (papersCoolMatch) {
@@ -23,11 +26,12 @@ export function identifyPaperFromItem(
     };
   }
 
-  const arxivMatch = text.match(ARXIV_RE) ?? text.match(LOOSE_ARXIV_RE);
-  if (arxivMatch) {
+  const arxivKey =
+    findExplicitArxivKey(text) ?? findBareArxivKey(bareArxivCandidates);
+  if (arxivKey) {
     return {
       branch: "arxiv",
-      key: arxivMatch[1],
+      key: arxivKey,
       source: "arxiv",
     };
   }
@@ -49,28 +53,64 @@ export function getItemTitle(item: Zotero.Item) {
   return getField(item, "title");
 }
 
-function collectItemText(item: Zotero.Item) {
+function collectItemSignals(item: Zotero.Item) {
+  const archive = getField(item, "archive");
+  const archiveLocation = getField(item, "archiveLocation");
+  const extra = getField(item, "extra");
   const values = [
     getField(item, "title"),
     getField(item, "url"),
     getField(item, "DOI"),
-    getField(item, "extra"),
-    getField(item, "archive"),
-    getField(item, "archiveLocation"),
+    extra,
+    archive,
+    archiveLocation,
     getField(item, "libraryCatalog"),
+  ];
+  const bareArxivCandidates = [
+    archive,
+    archiveLocation,
+    ...extra.split(/\r?\n/),
   ];
 
   try {
     for (const attachmentID of item.getAttachments()) {
       const attachment = Zotero.Items.get(attachmentID);
-      values.push(getField(attachment, "title"));
+      const attachmentTitle = getField(attachment, "title");
+      values.push(attachmentTitle);
       values.push(getField(attachment, "url"));
+      bareArxivCandidates.push(attachmentTitle);
     }
   } catch (error) {
     ztoolkit.log("Failed to inspect Zotero item attachments", error);
   }
 
-  return values.filter(Boolean).join("\n");
+  return {
+    text: values.filter(Boolean).join("\n"),
+    bareArxivCandidates: bareArxivCandidates.filter(Boolean),
+  };
+}
+
+function findExplicitArxivKey(text: string) {
+  for (const match of text.matchAll(ARXIV_RE)) {
+    if (isValidArxivKey(match[1])) {
+      return match[1];
+    }
+  }
+  return undefined;
+}
+
+function findBareArxivKey(candidates: string[]) {
+  for (const candidate of candidates) {
+    const match = candidate.match(BARE_ARXIV_RE);
+    if (match && isValidArxivKey(match[1])) {
+      return match[1];
+    }
+  }
+  return undefined;
+}
+
+function isValidArxivKey(key: string) {
+  return MODERN_ARXIV_ID_RE.test(key) || LEGACY_ARXIV_ID_RE.test(key);
 }
 
 function getField(item: Zotero.Item, field: string) {
