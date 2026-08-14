@@ -173,7 +173,7 @@ async function renderItem(
   } catch (error) {
     ztoolkit.log("papers.cool item pane render failed", error);
     if (!isStale()) {
-      renderError(state.kimiContainer, error);
+      renderTopLevelError(state, error);
       setStatus("papers.cool 加载失败", "warn");
     }
   }
@@ -557,6 +557,15 @@ function renderUnsupported(state: ShellState) {
     "这个条目没有可识别的 arXiv ID、papers.cool 链接或 OpenReview ID；也没有用标题在 papers.cool 搜到高置信匹配。";
   state.kimiContainer.textContent = "";
   state.relatedContainer.textContent = "";
+}
+
+function renderTopLevelError(state: ShellState, error: unknown) {
+  renderError(state.meta, error, "论文信息加载失败");
+  state.kimiContainer.textContent = "";
+  state.relatedContainer.textContent = "";
+  state.openPaperButton.disabled = true;
+  state.openRelatedButton.disabled = true;
+  updateRelatedSummary(state, "未加载");
 }
 
 function renderError(container: HTMLElement, error: unknown, prefix?: string) {

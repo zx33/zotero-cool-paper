@@ -2,6 +2,8 @@ import { assert } from "chai";
 import {
   parsePaperListHTML,
   parsePaperMetadataHTML,
+  TITLE_MATCH_THRESHOLD,
+  titleScore,
 } from "../src/modules/papersCoolClient";
 import {
   currentPapersCoolHTML,
@@ -71,6 +73,33 @@ describe("papers.cool HTML parser", function () {
           "arxiv",
         ),
       "missing its paper list",
+    );
+  });
+
+  it("normalizes punctuation and case for exact titles", function () {
+    assert.equal(
+      titleScore("Graph-Based Models: A Survey", "graph based models a survey"),
+      1,
+    );
+  });
+
+  it("accepts a candidate that contains the complete target title", function () {
+    assert.isAtLeast(
+      titleScore(
+        "Knowledge Graph Construction",
+        "Knowledge Graph Construction: A Survey",
+      ),
+      TITLE_MATCH_THRESHOLD,
+    );
+  });
+
+  it("rejects titles with insufficient word overlap", function () {
+    assert.isBelow(
+      titleScore(
+        "Knowledge Graph Construction",
+        "Graph Neural Architecture Search",
+      ),
+      TITLE_MATCH_THRESHOLD,
     );
   });
 });

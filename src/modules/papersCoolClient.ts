@@ -8,6 +8,7 @@ import type {
 } from "./types";
 
 const BASE_URL = "https://papers.cool";
+export const TITLE_MATCH_THRESHOLD = 0.68;
 const PAPER_DOM = {
   list: [".papers", "[data-paper-list]"],
   paper: [".paper", "[data-paper-id]"],
@@ -94,7 +95,7 @@ export async function resolvePaperByTitle(
     .sort((a, b) => b.score - a.score);
 
   const best = candidates[0];
-  if (!best || best.score < 0.68) {
+  if (!best || best.score < TITLE_MATCH_THRESHOLD) {
     return null;
   }
 
@@ -357,7 +358,7 @@ function queryAll<T extends Element>(
   return Array.from(root.querySelectorAll(selectors.join(", "))) as T[];
 }
 
-function titleScore(target: string, candidate: string) {
+export function titleScore(target: string, candidate: string) {
   const a = normalizeTitle(target);
   const b = normalizeTitle(candidate);
   if (!a || !b) {

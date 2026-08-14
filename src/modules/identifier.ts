@@ -19,11 +19,14 @@ export function identifyPaperFromItem(
 
   const papersCoolMatch = text.match(PAPERS_COOL_URL_RE);
   if (papersCoolMatch) {
-    return {
-      branch: papersCoolMatch[1].toLowerCase() as PaperReference["branch"],
-      key: decodeURIComponent(papersCoolMatch[2]),
-      source: "papers.cool-url",
-    };
+    const key = safeDecodeURIComponent(papersCoolMatch[2]);
+    if (key) {
+      return {
+        branch: papersCoolMatch[1].toLowerCase() as PaperReference["branch"],
+        key,
+        source: "papers.cool-url",
+      };
+    }
   }
 
   const arxivKey =
@@ -111,6 +114,14 @@ function findBareArxivKey(candidates: string[]) {
 
 function isValidArxivKey(key: string) {
   return MODERN_ARXIV_ID_RE.test(key) || LEGACY_ARXIV_ID_RE.test(key);
+}
+
+function safeDecodeURIComponent(value: string) {
+  try {
+    return decodeURIComponent(value);
+  } catch {
+    return undefined;
+  }
 }
 
 function getField(item: Zotero.Item, field: string) {

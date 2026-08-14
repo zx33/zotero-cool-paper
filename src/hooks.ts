@@ -8,7 +8,6 @@ import {
   registerLocalRelItemPane,
   unregisterLocalRelItemPane,
 } from "./modules/localRel";
-import { createZToolkit } from "./utils/ztoolkit";
 
 async function onStartup() {
   await Promise.all([
@@ -29,9 +28,7 @@ async function onStartup() {
   addon.data.initialized = true;
 }
 
-async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
-  addon.data.ztoolkit = createZToolkit();
-
+function onMainWindowLoad(win: _ZoteroTypes.MainWindow): void {
   win.MozXULElement.insertFTLIfNeeded(
     `${addon.data.config.addonRef}-mainWindow.ftl`,
   );
@@ -40,8 +37,8 @@ async function onMainWindowLoad(win: _ZoteroTypes.MainWindow): Promise<void> {
   ztoolkit.log(getString("startup-finish"));
 }
 
-async function onMainWindowUnload(win: Window): Promise<void> {
-  ztoolkit.unregisterAll();
+function onMainWindowUnload(win: Window): void {
+  void win;
 }
 
 function onShutdown(): void {

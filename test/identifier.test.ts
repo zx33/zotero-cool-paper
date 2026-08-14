@@ -34,6 +34,33 @@ describe("paper identifier", function () {
     );
   });
 
+  it("ignores a malformed papers.cool URL and continues identification", function () {
+    assert.deepEqual(
+      identifyPaperFromItem(
+        itemWithFields({
+          url: "https://papers.cool/arxiv/%ZZ",
+          extra: "arXiv: 2301.12345",
+        }),
+      ),
+      arxivReference("2301.12345"),
+    );
+  });
+
+  it("decodes a valid encoded papers.cool paper key", function () {
+    assert.deepEqual(
+      identifyPaperFromItem(
+        itemWithFields({
+          url: "https://papers.cool/arxiv/hep-th%2F9901001",
+        }),
+      ),
+      {
+        branch: "arxiv",
+        key: "hep-th/9901001",
+        source: "papers.cool-url",
+      },
+    );
+  });
+
   it("recognizes an arXiv DOI", function () {
     assert.deepEqual(
       identifyPaperFromItem(
