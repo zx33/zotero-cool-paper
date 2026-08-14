@@ -73,6 +73,7 @@ npm run build
 - `papers.cool` 面板只请求公开的 papers.cool 页面与接口
 - `Local REL` 面板完全在本地运行，不请求 papers.cool，也不会上传 Zotero 条目、标签、摘要或全文
 - 缓存内容仅保存在本地 Zotero SQLite 数据库表 `paperscool_cache`
+- metadata 与 REL 缓存有效期为 7 天，KIMI 缓存有效期为 30 天；缓存最多保留 500 篇论文和 90 天，并可在 `papers.cool` 面板中手动清空
 - `papers.cool` 面板的手动刷新会重新请求当前论文对应的在线内容；`Local REL` 刷新只会重新查询本地文献库
 
 ---
