@@ -2,6 +2,7 @@ import { marked } from "marked";
 import { getLocaleID } from "../utils/locale";
 import { clearPapersCoolCache, getCache, saveCachePatch } from "./cache";
 import { getItemTitle, identifyPaperFromItem } from "./identifier";
+import { normalizeKimiHTML } from "./kimiParser";
 import {
   buildPaperURL,
   fetchKimiReading,
@@ -597,18 +598,6 @@ function contentStatusMessage(kimiOK: boolean, relatedOK: boolean) {
     return "REL 已加载，KIMI 加载失败";
   }
   return "KIMI 与 REL 加载失败";
-}
-
-function normalizeKimiHTML(text: string) {
-  const urlRegex =
-    /(\b(https?|ftp|file):\/\/[-A-Z0-9+&@#/%?=~_|!:,.;]*[-A-Z0-9+&@#/%=~_|])/gi;
-  return text
-    .replace(/^<div\s+class=["']faq-a["']\s*>\s*$/gim, "")
-    .replace(/^<\/div>\s*$/gim, "")
-    .replace(urlRegex, " $1 ")
-    .replace(/---\n/g, "")
-    .replace(/(-|\n)&gt;/g, "$1>")
-    .replace(/&lt;(\/{0,1}[a-z]{2,4})&gt;/g, "<$1>");
 }
 
 function createSanitizedFragment(html: string, targetDoc: Document) {

@@ -8,13 +8,30 @@ import type {
 } from "./types";
 
 const BASE_URL = "https://papers.cool";
+const PAPER_DOM = {
+  list: [".papers", "[data-paper-list]"],
+  paper: [".paper", "[data-paper-id]"],
+  titleLink: [
+    ".title-link",
+    "[data-role='paper-title']",
+    "h2 a[href]",
+    "h3 a[href]",
+  ],
+  pdfLink: [".title-pdf", "[data-role='paper-pdf']"],
+  authors: [".authors", "[data-role='paper-authors']"],
+  summary: [".summary", "[data-role='paper-summary']"],
+  subjects: [".subjects", "[data-role='paper-subjects']"],
+  date: [".date", "[data-role='paper-date']"],
+  kimiStars: [".title-kimi sup", "[data-role='kimi-stars']"],
+  pdfStars: [".title-pdf sup", "[data-role='pdf-stars']"],
+  empty: [".no-results", ".empty-results", "[data-empty-results]"],
+} as const;
 
 export async function fetchPaperMetadata(
   reference: PaperReference,
 ): Promise<PaperMetadata> {
   const html = await requestText("GET", buildPaperURL(reference));
-  const doc = parseHTML(html);
-  const metadata = parseMetadataDocument(doc, reference);
+  const metadata = parsePaperMetadataHTML(html, reference);
   if (!metadata.title) {
     throw new Error("papers.cool did not return a paper detail page");
   }
@@ -46,8 +63,7 @@ export async function fetchRelatedPapers(
 
   const url = buildRelatedURL(metadata.branch, metadata.keywords);
   const html = await requestText("GET", url);
-  const doc = parseHTML(html);
-  const papers = parsePaperList(doc, metadata.branch).filter(
+  const papers = parsePaperListHTML(html, metadata.branch).filter(
     (paper) => paper.key !== metadata.key,
   );
   return { url, papers };
@@ -65,7 +81,7 @@ export async function resolvePaperByTitle(
     (["arxiv", "venue"] as const).map(async (branch) => {
       const url = buildSearchURL(branch, cleanTitle);
       const html = await requestText("GET", url);
-      return parsePaperList(parseHTML(html), branch);
+      return parsePaperListHTML(html, branch);
     }),
   );
 
@@ -166,12 +182,23 @@ function parseHTML(html: string) {
   return new DOMParser().parseFromString(html, "text/html");
 }
 
+export function parsePaperMetadataHTML(
+  html: string,
+  reference: PaperReference,
+) {
+  return parseMetadataDocument(parseHTML(html), reference);
+}
+
+export function parsePaperListHTML(html: string, branch: PapersCoolBranch) {
+  return parsePaperList(parseHTML(html), branch);
+}
+
 function parseMetadataDocument(
   doc: Document,
   reference: PaperReference,
 ): PaperMetadata {
-  const paper = doc.querySelector(".paper") as HTMLElement | null;
-  const key = paper?.id || reference.key;
+  const paper = firstPaperElement(doc);
+  const key = paperKey(paper) || reference.key;
   const branch = reference.branch;
   const base = parsePaperElement(paper, branch);
 
@@ -196,7 +223,7 @@ function parseMetadataDocument(
       metaContent(doc, "citation_date") ||
       metaContent(doc, "citation_year") ||
       base?.published,
-    keywords: paper?.getAttribute("keywords") || base?.keywords,
+    keywords: paperKeywords(paper) || base?.keywords,
     paperURL:
       absoluteURL(
         (doc.getElementById(`title-${key}`) as HTMLAnchorElement | null)?.href,
@@ -215,23 +242,39 @@ function parseMetadataDocument(
 }
 
 function parsePaperList(doc: Document, branch: PapersCoolBranch) {
-  return Array.from(doc.querySelectorAll(".paper"))
+  const list = queryFirst<HTMLElement>(doc, PAPER_DOM.list);
+  if (!list) {
+    throw new Error("papers.cool search page is missing its paper list");
+  }
+
+  const paperElements = queryAll<HTMLElement>(list, PAPER_DOM.paper);
+  if (!paperElements.length) {
+    if (isKnownEmptyResult(doc, list)) {
+      return [];
+    }
+    throw new Error("papers.cool paper list has an unrecognized structure");
+  }
+
+  const papers = paperElements
     .map((paper) => parsePaperElement(paper as HTMLElement, branch))
     .filter(Boolean) as RelatedPaper[];
+  if (!papers.length) {
+    throw new Error("papers.cool paper entries could not be parsed");
+  }
+  return papers;
 }
 
 function parsePaperElement(
   paper: HTMLElement | null,
   branch: PapersCoolBranch,
 ): RelatedPaper | null {
-  if (!paper?.id) {
+  const key = paperKey(paper);
+  if (!paper || !key) {
     return null;
   }
 
-  const titleLink = paper.querySelector(
-    ".title-link",
-  ) as HTMLAnchorElement | null;
-  const pdfLink = paper.querySelector(".title-pdf") as HTMLElement | null;
+  const titleLink = queryFirst<HTMLAnchorElement>(paper, PAPER_DOM.titleLink);
+  const pdfLink = queryFirst<HTMLElement>(paper, PAPER_DOM.pdfLink);
   const title = cleanWhitespace(titleLink?.textContent);
   if (!title) {
     return null;
@@ -239,33 +282,79 @@ function parsePaperElement(
 
   return {
     branch,
-    key: paper.id,
+    key,
     title,
     authors: cleanLabel(
-      cleanWhitespace(paper.querySelector(".authors")?.textContent),
+      cleanWhitespace(queryFirst(paper, PAPER_DOM.authors)?.textContent),
     ),
-    summary: cleanWhitespace(paper.querySelector(".summary")?.textContent),
+    summary: cleanWhitespace(queryFirst(paper, PAPER_DOM.summary)?.textContent),
     subject: cleanLabel(
-      cleanWhitespace(paper.querySelector(".subjects")?.textContent),
+      cleanWhitespace(queryFirst(paper, PAPER_DOM.subjects)?.textContent),
     ),
     published: cleanLabel(
-      cleanWhitespace(paper.querySelector(".date")?.textContent),
+      cleanWhitespace(queryFirst(paper, PAPER_DOM.date)?.textContent),
     ),
-    keywords: paper.getAttribute("keywords") || undefined,
+    keywords: paperKeywords(paper),
     paperURL:
       absoluteURL(titleLink?.getAttribute("href")) ||
       buildPaperURL({
         branch,
-        key: paper.id,
+        key,
       }),
-    pdfURL: pdfLink?.getAttribute("data") || undefined,
+    pdfURL: elementURL(pdfLink),
     kimiStars: numberFromText(
-      paper.querySelector(".title-kimi sup")?.textContent,
+      queryFirst(paper, PAPER_DOM.kimiStars)?.textContent,
     ),
     pdfStars: numberFromText(
-      paper.querySelector(".title-pdf sup")?.textContent,
+      queryFirst(paper, PAPER_DOM.pdfStars)?.textContent,
     ),
   };
+}
+
+function firstPaperElement(doc: Document) {
+  const list = queryFirst<HTMLElement>(doc, PAPER_DOM.list);
+  return queryFirst<HTMLElement>(list ?? doc, PAPER_DOM.paper);
+}
+
+function paperKey(paper: HTMLElement | null) {
+  return paper?.id || paper?.getAttribute("data-paper-id") || undefined;
+}
+
+function paperKeywords(paper: HTMLElement | null) {
+  return (
+    paper?.getAttribute("keywords") ||
+    paper?.getAttribute("data-keywords") ||
+    undefined
+  );
+}
+
+function elementURL(element: HTMLElement | null) {
+  return (
+    element?.getAttribute("data") ||
+    element?.getAttribute("data-url") ||
+    absoluteURL(element?.getAttribute("href"))
+  );
+}
+
+function isKnownEmptyResult(doc: Document, list: HTMLElement) {
+  return Boolean(
+    queryFirst(list, PAPER_DOM.empty) ||
+    /\btotal\s*:\s*0\b/i.test(doc.body?.textContent ?? ""),
+  );
+}
+
+function queryFirst<T extends Element>(
+  root: ParentNode,
+  selectors: readonly string[],
+) {
+  return root.querySelector(selectors.join(", ")) as T | null;
+}
+
+function queryAll<T extends Element>(
+  root: ParentNode,
+  selectors: readonly string[],
+) {
+  return Array.from(root.querySelectorAll(selectors.join(", "))) as T[];
 }
 
 function titleScore(target: string, candidate: string) {
