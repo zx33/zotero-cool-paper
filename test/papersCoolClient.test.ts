@@ -2,11 +2,13 @@ import { assert } from "chai";
 import {
   parsePaperListHTML,
   parsePaperMetadataHTML,
+  resolvePaperByTitle,
   TITLE_MATCH_THRESHOLD,
   titleScore,
 } from "../src/modules/papersCoolClient";
 import {
   currentPapersCoolHTML,
+  currentVenueHTML,
   emptyPapersCoolHTML,
   semanticFallbackHTML,
 } from "./fixtures/papersCoolHTML";
@@ -63,6 +65,61 @@ describe("papers.cool HTML parser", function () {
       keywords: "fallback,parser",
       pdfURL: "https://example.com/fallback.pdf",
     });
+  });
+
+  it("prefers the venue title link over an earlier publisher link", function () {
+    const papers = parsePaperListHTML(currentVenueHTML, "venue");
+
+    assert.lengthOf(papers, 1);
+    assert.deepInclude(papers[0], {
+      branch: "venue",
+      key: "36974@AAAI",
+      title:
+        "ProAR: Probabilistic Autoregressive Modeling for Molecular Dynamics",
+      paperURL: "https://papers.cool/venue/36974@AAAI",
+    });
+    assert.equal(
+      titleScore(
+        "ProAR: Probabilistic autoregressive modeling for molecular dynamics",
+        papers[0].title,
+      ),
+      1,
+    );
+  });
+
+  it("reports an error when every title search branch fails", async function () {
+    const originalXMLHttpRequest = globalThis.XMLHttpRequest;
+    class FailingXMLHttpRequest {
+      status = 500;
+      responseText = "upstream failure";
+      timeout = 0;
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      ontimeout: (() => void) | null = null;
+
+      open() {}
+      setRequestHeader() {}
+      send() {
+        this.onload?.();
+      }
+    }
+
+    globalThis.XMLHttpRequest =
+      FailingXMLHttpRequest as unknown as typeof XMLHttpRequest;
+    let error: unknown;
+    try {
+      await resolvePaperByTitle("Example paper title");
+    } catch (caught) {
+      error = caught;
+    } finally {
+      globalThis.XMLHttpRequest = originalXMLHttpRequest;
+    }
+
+    assert.instanceOf(error, Error);
+    assert.include(
+      (error as Error).message,
+      "title search failed for every branch",
+    );
   });
 
   it("reports an upstream structure change instead of returning no papers", function () {

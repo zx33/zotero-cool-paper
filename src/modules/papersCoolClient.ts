@@ -78,13 +78,28 @@ export async function resolvePaperByTitle(
     return null;
   }
 
+  const branches = ["arxiv", "venue"] as const;
   const results = await Promise.allSettled(
-    (["arxiv", "venue"] as const).map(async (branch) => {
+    branches.map(async (branch) => {
       const url = buildSearchURL(branch, cleanTitle);
       const html = await requestText("GET", url);
       return parsePaperListHTML(html, branch);
     }),
   );
+
+  const failures = results.flatMap((result, index) =>
+    result.status === "rejected"
+      ? [{ branch: branches[index], reason: result.reason }]
+      : [],
+  );
+  if (failures.length === branches.length) {
+    const details = failures
+      .map(({ branch, reason }) => `${branch}: ${errorMessage(reason)}`)
+      .join("; ");
+    throw new Error(
+      `papers.cool title search failed for every branch: ${details}`,
+    );
+  }
 
   const candidates = results
     .flatMap((result) => (result.status === "fulfilled" ? result.value : []))
@@ -348,7 +363,13 @@ function queryFirst<T extends Element>(
   root: ParentNode,
   selectors: readonly string[],
 ) {
-  return root.querySelector(selectors.join(", ")) as T | null;
+  for (const selector of selectors) {
+    const match = root.querySelector(selector) as T | null;
+    if (match) {
+      return match;
+    }
+  }
+  return null;
 }
 
 function queryAll<T extends Element>(
@@ -385,6 +406,10 @@ function normalizeTitle(title: string) {
     .replace(/[^\p{L}\p{N}]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function errorMessage(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function textByID(doc: Document, id: string) {

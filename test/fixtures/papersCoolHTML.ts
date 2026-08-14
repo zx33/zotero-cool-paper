@@ -47,3 +47,24 @@ export const semanticFallbackHTML = `<!doctype html>
     </main>
   </body>
 </html>`;
+
+// Reduced snapshot of https://papers.cool/venue/36974@AAAI captured 2026-08-14.
+// The external publisher link intentionally precedes the papers.cool title link.
+export const currentVenueHTML = `<!doctype html>
+<html>
+  <body>
+    <div>Total: 1</div>
+    <div class="papers">
+      <div id="36974@AAAI" class="panel paper" keywords="proar,autoregressive,dynamics,molecular">
+        <h2 class="title">
+          <a href="https://ojs.aaai.org/index.php/AAAI/article/view/36974"><span class="index">#1</span></a>
+          <a id="title-36974@AAAI" class="title-link notranslate" href="/venue/36974@AAAI">ProAR: Probabilistic Autoregressive Modeling for Molecular Dynamics</a>
+          <a id="pdf-36974@AAAI" class="title-pdf notranslate" data="https://ojs.aaai.org/index.php/AAAI/article/view/36974/40936">[PDF]</a>
+        </h2>
+        <p id="authors-36974@AAAI" class="metainfo authors notranslate"><strong>Authors</strong>: Kaiwen Cheng, Yutian Liu</p>
+        <p id="summary-36974@AAAI" class="summary notranslate">A probabilistic autoregressive framework for molecular dynamics.</p>
+        <p id="subjects-36974@AAAI" class="metainfo subjects"><strong>Subject</strong>: AAAI.2026 - Application Domains</p>
+      </div>
+    </div>
+  </body>
+</html>`;
