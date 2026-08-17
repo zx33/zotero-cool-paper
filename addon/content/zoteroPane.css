@@ -1,7 +1,24 @@
 .pcp-body {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
   color: var(--fill-primary, #333);
   font-size: 12px;
   line-height: 1.45;
+}
+
+.pcp-root,
+.pcp-local-root,
+.pcp-section,
+.pcp-kimi,
+.pcp-related,
+.pcp-related-list,
+.pcp-local-results {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .pcp-toolbar {
@@ -89,7 +106,25 @@
 
 .pcp-kimi {
   color: var(--fill-primary, #333);
+  white-space: normal;
   overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.pcp-kimi :where(p, li, blockquote, div) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pcp-kimi :where(img, svg, video, canvas) {
+  max-width: 100%;
+  height: auto;
+}
+
+.pcp-kimi table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
 }
 
 .pcp-kimi .faq-q {
@@ -116,6 +151,8 @@
 }
 
 .pcp-kimi pre {
+  box-sizing: border-box;
+  max-width: 100%;
   overflow: auto;
   padding: 8px;
   border: 1px solid var(--material-border, #ddd);
