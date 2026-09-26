@@ -41,6 +41,12 @@ export default defineConfig({
     waitForPlugin: `() => Zotero.${pkg.config.addonInstance}.data.initialized`,
   },
 
+  server: {
+    // Always start the scaffold's separate profile, even when Zotero is open.
+    startArgs: ["-no-remote"],
+    devtools: false,
+  },
+
   // If you need to see a more detailed log, uncomment the following line:
   // logLevel: "trace",
 });

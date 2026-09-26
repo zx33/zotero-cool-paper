@@ -9,6 +9,58 @@
   line-height: 1.45;
 }
 
+/*
+ * Zotero's item-pane main column keeps its automatic flex min-size. Content
+ * elsewhere in the details pane can therefore make the whole column wider
+ * than the space before the sidenav, even when our own descendants wrap.
+ * Scope the flex-chain fix to item panes that contain one of our sections.
+ */
+.zotero-view-item-container:has(.pcp-body),
+.zotero-view-item-main:has(.pcp-body),
+.zotero-view-item:has(.pcp-body),
+item-pane-custom-section:has(.pcp-body),
+item-pane-custom-section:has(.pcp-body) > collapsible-section,
+item-pane-custom-section:has(.pcp-body) > collapsible-section > .body {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/*
+ * Reader tabs render item details through a separate context-pane deck. The
+ * flexible vbox receives the correct space before the 37px sidenav, but the
+ * selected deck panel can keep a wider intrinsic size and paint underneath
+ * that sidenav. Give the flexible host a zero base width and make every deck
+ * layer resolve percentages against the space Zotero actually assigned it.
+ */
+#zotero-context-pane:has(.pcp-body) > vbox {
+  box-sizing: border-box;
+  width: 0;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#zotero-context-pane-inner:has(.pcp-body),
+#zotero-context-pane-deck:has(.pcp-body),
+#zotero-context-pane-item-deck:has(.pcp-body),
+#zotero-context-pane-item-deck > item-details:has(.pcp-body),
+#zotero-context-pane-item-deck
+  > item-details:has(.pcp-body)
+  > .zotero-view-item-container,
+#zotero-context-pane-item-deck
+  > item-details:has(.pcp-body)
+  > .zotero-view-item-container
+  > .zotero-view-item-main {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+#zotero-context-pane-deck:has(.pcp-body) {
+  position: relative;
+}
+
 .pcp-root,
 .pcp-local-root,
 .pcp-section,
@@ -284,4 +336,130 @@
   border: 1px dashed var(--material-border, #ddd);
   border-radius: 5px;
   color: var(--fill-secondary, #666);
+}
+
+.pcp-reading,
+.pcp-reading * {
+  box-sizing: border-box;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.pcp-reading {
+  width: 100%;
+  color: var(--fill-primary, #333);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pcp-reading-title {
+  font-weight: 600;
+  margin: 0 0 6px;
+}
+.pcp-reading-hint {
+  color: var(--fill-secondary, #666);
+  font-size: 11px;
+}
+.pcp-reading label {
+  display: grid;
+  gap: 4px;
+  margin: 8px 0;
+}
+.pcp-reading input,
+.pcp-reading select {
+  width: 100%;
+  padding: 5px;
+  color: inherit;
+  background: var(--material-background, #fff);
+  border: 1px solid var(--material-border, #bbb);
+  border-radius: 4px;
+}
+.pcp-reading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 10px 0;
+}
+.pcp-reading button {
+  font: inherit;
+  cursor: pointer;
+  border: 1px solid var(--material-border, #bbb);
+  border-radius: 4px;
+  padding: 3px 8px;
+  color: inherit;
+  background: var(--material-background, #fff);
+}
+.pcp-reading button[data-action="generate"] {
+  color: white;
+  background: #5268ae;
+  border-color: #5268ae;
+}
+.pcp-reading button:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+.pcp-reading [hidden] {
+  display: none !important;
+}
+.pcp-reading button:focus-visible,
+.pcp-reading summary:focus-visible {
+  outline: 2px solid #5268ae;
+  outline-offset: 2px;
+}
+.pcp-reading-status {
+  font-weight: 500;
+}
+.pcp-reading-warning {
+  color: var(--fill-secondary, #805800);
+  white-space: pre-wrap;
+}
+.pcp-reading-question {
+  border-top: 1px solid var(--material-border, #ddd);
+  padding: 9px 0;
+}
+.pcp-reading summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+.pcp-reading-answer p {
+  margin: 7px 0;
+}
+.pcp-reading-answer ul,
+.pcp-reading-answer ol {
+  padding-left: 20px;
+}
+.pcp-reading-answer blockquote {
+  margin: 6px 0;
+  padding-left: 10px;
+  border-left: 2px solid var(--material-border, #ccc);
+}
+.pcp-reading-refs {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  font-size: 11px;
+  color: var(--fill-secondary, #666);
+}
+.pcp-reading-refs button {
+  padding: 0 5px;
+  color: #5268ae;
+}
+.pcp-reading-source,
+.pcp-reading-settings {
+  margin: 12px 0;
+  border: 1px solid var(--material-border, #ddd);
+  padding: 8px;
+  border-radius: 5px;
+}
+.pcp-reading pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  max-height: 360px;
+  overflow: auto;
+  font: inherit;
+  user-select: text;
 }

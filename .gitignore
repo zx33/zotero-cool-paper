@@ -3,6 +3,10 @@ node_modules/
 build/
 dist/
 coverage/
+output/local-reading/
+/docs/local-reading/
+/scripts/local-reading/
+__pycache__/
 *.xpi
 *.zip
 .DS_Store

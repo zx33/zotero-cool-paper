@@ -1,7 +1,7 @@
 {
   "name": "zotero-cool-paper",
   "type": "module",
-  "version": "0.1.16",
+  "version": "0.1.18-beta.2",
   "description": "Read papers.cool KIMI content and discover related papers in your local Zotero library.",
   "homepage": "https://github.com/zx33/zotero-cool-paper",
   "config": {
@@ -34,7 +34,7 @@
     "lint:check": "prettier --check . && eslint .",
     "lint:fix": "prettier --write . && eslint . --fix",
     "release": "zotero-plugin release",
-    "test": "zotero-plugin test",
+    "test": "node scripts/test-zotero.mjs",
     "update-deps": "npm update --save"
   },
   "dependencies": {

@@ -6,3 +6,7 @@ local-rel-section-head-text =
     .label = Local REL
 local-rel-section-sidenav-tooltip =
     .tooltiptext = Related papers from your local Zotero library
+local-reading-section-head-text =
+    .label = Local Reading
+local-reading-section-sidenav-tooltip =
+    .tooltiptext = Read a local PDF with Kimi on demand

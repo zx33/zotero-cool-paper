@@ -6,3 +6,7 @@ local-rel-section-head-text =
     .label = Local REL
 local-rel-section-sidenav-tooltip =
     .tooltiptext = Zotero 本地文献库中的相关论文
+local-reading-section-head-text =
+    .label = 本地解读
+local-reading-section-sidenav-tooltip =
+    .tooltiptext = 按需用 Kimi 解读本地 PDF

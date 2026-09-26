@@ -1,5 +1,11 @@
 import { getString, initLocale } from "./utils/locale";
+import { version as addonVersion } from "../package.json";
 import { initPapersCoolCache } from "./modules/cache";
+import { initReadingStore } from "./modules/localReading/store";
+import {
+  registerLocalReadingItemPane,
+  unregisterLocalReadingItemPane,
+} from "./modules/localReading/pane";
 import {
   registerPapersCoolItemPane,
   unregisterPapersCoolItemPane,
@@ -18,8 +24,10 @@ async function onStartup() {
 
   initLocale();
   await initPapersCoolCache();
+  await initReadingStore();
   registerPapersCoolItemPane();
   registerLocalRelItemPane();
+  registerLocalReadingItemPane();
 
   await Promise.all(
     Zotero.getMainWindows().map((win) => onMainWindowLoad(win)),
@@ -38,10 +46,14 @@ function onMainWindowLoad(win: _ZoteroTypes.MainWindow): void {
 }
 
 function onMainWindowUnload(win: Window): void {
-  void win;
+  unregisterStyleSheet(win);
 }
 
 function onShutdown(): void {
+  unregisterLocalReadingItemPane();
+  for (const win of Zotero.getMainWindows()) {
+    unregisterStyleSheet(win);
+  }
   unregisterLocalRelItemPane();
   unregisterPapersCoolItemPane();
   ztoolkit.unregisterAll();
@@ -52,14 +64,27 @@ function onShutdown(): void {
 
 function registerStyleSheet(win: _ZoteroTypes.MainWindow) {
   const doc = win.document;
+  unregisterStyleSheet(win);
   const styles = ztoolkit.UI.createElement(doc, "link", {
     properties: {
+      id: `${addon.data.config.addonRef}-stylesheet`,
       type: "text/css",
       rel: "stylesheet",
-      href: `chrome://${addon.data.config.addonRef}/content/zoteroPane.css`,
+      href: `${styleSheetURL()}?version=${encodeURIComponent(addonVersion)}`,
     },
   });
   doc.documentElement?.appendChild(styles);
+}
+
+function unregisterStyleSheet(win: Window) {
+  const prefix = styleSheetURL();
+  win.document
+    .querySelectorAll(`link[href^="${prefix}"]`)
+    .forEach((link: Element) => link.remove());
+}
+
+function styleSheetURL() {
+  return `chrome://${addon.data.config.addonRef}/content/zoteroPane.css`;
 }
 
 export default {
