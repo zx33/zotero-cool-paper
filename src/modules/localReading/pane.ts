@@ -8,6 +8,7 @@ import {
   PRICE_DATE,
   PROTOCOL,
   QUESTIONS,
+  QUESTION_IDS,
   type Question,
 } from "./protocol";
 import { ReadingError, safeError } from "./runtime";
@@ -21,7 +22,6 @@ import type { ReadingRun } from "./store";
 
 export const READING_PANE_ID = "zoterocoolpaper-local-reading";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
-const BUDGET_PREF = `${config.prefsPrefix}.localReading.maxCost`;
 const cleanups = new Map<HTMLElement, () => void>();
 const paneItems = new WeakMap<HTMLElement, number | undefined>();
 let registeredPane: string | false = false;
@@ -131,7 +131,7 @@ export async function mountReadingPane(
     element(
       doc,
       "p",
-      "点击生成后，所选 PDF 或已缓存的解析正文会发送至 Kimi 官方 API。打开此页不会调用模型。",
+      "六个问题分别阅读论文全文，由 Kimi 批量生成。提交后可关闭 Zotero，稍后回来查看。",
       "pcp-reading-hint",
     ),
   );
@@ -152,7 +152,7 @@ export async function mountReadingPane(
   label.append(select);
   root.append(label);
   const actions = element(doc, "div", undefined, "pcp-reading-actions");
-  const generate = element(doc, "button", "生成解读");
+  const generate = element(doc, "button", "生成六问");
   generate.dataset.action = "generate";
   const cancel = element(doc, "button", "取消");
   cancel.hidden = true;
@@ -169,8 +169,8 @@ export async function mountReadingPane(
   const report = element(doc, "div", undefined, "pcp-reading-report");
   root.append(report);
   const sourceView = element(doc, "details", undefined, "pcp-reading-source");
-  sourceView.append(element(doc, "summary", "来源段落（非 PDF 页码）"));
-  const sourceText = element(doc, "pre", "生成后可点击每题下方的来源编号。");
+  sourceView.append(element(doc, "summary", "论文解析正文"));
+  const sourceText = element(doc, "pre", "解析完成后可在这里查看全文。");
   sourceText.tabIndex = 0;
   sourceView.append(sourceText);
   root.append(sourceView);
@@ -180,7 +180,7 @@ export async function mountReadingPane(
     element(
       doc,
       "p",
-      "基于文件接口返回的文字；扫描页、图片及公式可能解析不全。本版不自动补图。解读是模型草稿，可点击来源核对。",
+      "解读保存在本机；可展开论文解析正文或打开 PDF 对照阅读。",
       "pcp-reading-hint",
     ),
   );
@@ -219,11 +219,17 @@ export async function mountReadingPane(
       section.open = true;
       section.append(element(doc, "summary", `${index + 1}. ${title}`));
       const content = element(doc, "div", undefined, "pcp-reading-answer");
-      renderMarkdown(content, answer.answer);
+      if (answer) renderMarkdown(content, answer.answer);
+      else {
+        content.textContent =
+          run.questions?.[`q${index + 1}` as Question]?.error ??
+          "此题尚未完成。";
+        content.className = "pcp-reading-hint";
+      }
       section.append(content);
       const refs = element(doc, "div", undefined, "pcp-reading-refs");
       refs.append(element(doc, "span", "依据 "));
-      for (const id of answer.sources) {
+      for (const id of answer?.sources ?? []) {
         const link = element(doc, "button", id);
         link.title = "查看文件解析原文段落";
         link.addEventListener("click", () => {
@@ -234,7 +240,19 @@ export async function mountReadingPane(
         });
         refs.append(link);
       }
-      section.append(refs);
+      if (answer?.sources.length) section.append(refs);
+      const parts = run.questions?.[`q${index + 1}` as Question]?.parts;
+      if (!answer && parts?.some((part) => part.content)) {
+        const draft = element(doc, "details");
+        draft.append(element(doc, "summary", "查看已生成部分"));
+        const draftContent = element(doc, "div");
+        renderMarkdown(
+          draftContent,
+          parts.map((part) => part.content).join("\n\n"),
+        );
+        draft.append(draftContent);
+        section.append(draft);
+      }
       report.append(section);
     }
     if (run.checks?.warnings.length)
@@ -263,54 +281,63 @@ export async function mountReadingPane(
     ]);
     if (!alive || version !== paintVersion || current !== pdf) return;
     const active = service.job(current.identity);
-    const last = active?.run ?? finished ?? latest;
+    const last = active?.run ?? latest ?? finished;
     good = saved;
-    generate.textContent = good ? "重新生成" : "生成解读";
-    generate.disabled = Boolean(active) || service.busy();
-    cancel.hidden = !active;
-    cancel.disabled = active?.controller.signal.aborted ?? false;
-    select.disabled = Boolean(active);
+    const resumable =
+      last?.protocol === PROTOCOL &&
+      last.questions &&
+      last.status !== "complete";
+    generate.textContent =
+      last?.status === "running" && !active
+        ? "继续查询"
+        : resumable
+          ? "补全六问"
+          : good
+            ? "重新生成六问"
+            : "生成六问";
+    generate.disabled = Boolean(active);
+    cancel.hidden = !active && last?.status !== "running";
+    cancel.disabled = Boolean(last?.cancelRequested);
+    select.disabled = false;
     open.disabled = false;
-    status.textContent =
-      active?.run.message ??
-      last?.message ??
-      "尚未生成。点击按钮开始六问解读。";
-    if (service.busy() && !active)
-      status.textContent = "另一篇论文正在生成；完成后可继续。";
-    if (good && last && last.id !== good.id && last.status !== "running")
-      status.textContent += " 下方显示上一版成功结果。";
+    status.textContent = last?.message ?? "尚未生成。点击按钮开始六问解读。";
+    const shown =
+      last?.answers && Object.keys(last.answers).length ? last : good;
+    if (shown && last && shown.id !== last.id)
+      status.textContent += " 下方保留上一版完整解读。";
     attempt.replaceChildren();
     if (last?.cleanupPending)
       attempt.append(
         element(
           doc,
           "p",
-          "有云端文件尚未确认删除。请在设置中重试清理。",
+          "有已结束任务的云端文件待清理，可在设置中重试。",
           "pcp-reading-warning",
         ),
       );
-    if (last && last.id !== good?.id && last.status !== "running") {
+    if (
+      last &&
+      last.id !== shown?.id &&
+      (last.status !== "running" || last.completion.usage)
+    )
       attempt.append(
-        element(
-          doc,
-          "p",
-          `最近一次尝试：${usageText(last)}`,
-          "pcp-reading-hint",
-        ),
+        element(doc, "p", "本次任务：" + usageText(last), "pcp-reading-hint"),
       );
-      if (last.completion.content) {
-        const draft = element(doc, "details");
-        draft.append(
-          element(doc, "summary", "查看未通过检查的原始草稿"),
-          element(doc, "pre", last.completion.content),
-        );
-        attempt.append(draft);
-      }
-    }
-    // Preserve expanded questions and source focus during progress updates.
-    if (report.dataset.run !== (good?.id ?? "")) {
-      renderReport(good);
-      report.dataset.run = good?.id ?? "";
+    const reportKey = shown
+      ? shown.id +
+        ":" +
+        QUESTION_IDS.map((q) =>
+          [
+            shown.answers?.[q]?.answer.length,
+            shown.questions?.[q]?.status,
+            shown.questions?.[q]?.parts.length,
+          ].join("/"),
+        ).join(",")
+      : "";
+    // Preserve expanded sections while only the batch status is changing.
+    if (report.dataset.run !== reportKey) {
+      renderReport(shown);
+      report.dataset.run = reportKey;
     }
   }
 
@@ -321,7 +348,7 @@ export async function mountReadingPane(
     finished = undefined;
     report.replaceChildren();
     delete report.dataset.run;
-    sourceText.textContent = "生成后可点击每题下方的来源编号。";
+    sourceText.textContent = "解析完成后可在这里查看全文。";
     sourceView.open = false;
     attempt.replaceChildren();
     generate.disabled = true;
@@ -339,6 +366,7 @@ export async function mountReadingPane(
       const text = await service.store.getText(selected.hash);
       if (!alive || revision !== selection) return;
       pdf = selected;
+      sourceText.textContent = text ?? "解析完成后可在这里查看全文。";
       sources = new Map(makeSources(text ?? "").map((s) => [s.id, s.text]));
       await paint();
     } catch (error) {
@@ -358,19 +386,23 @@ export async function mountReadingPane(
       });
   });
   cancel.addEventListener("click", () => {
-    if (pdf) service.cancel(pdf.identity);
+    if (pdf)
+      void service.cancel(pdf.identity).catch((error) => {
+        if (alive) status.textContent = safeError(error);
+      });
   });
   generate.addEventListener("click", async () => {
     if (!pdf) return;
     const current = pdf;
     generate.disabled = true;
     try {
-      const result = await service.start(current, getBudget());
+      const result = await service.start(current);
       if (!alive || current !== pdf) return;
       finished = result;
       const text = await service.store.getText(current.hash);
       if (!alive || current !== pdf) return;
       sources = new Map(makeSources(text ?? "").map((s) => [s.id, s.text]));
+      sourceText.textContent = text ?? "解析完成后可在这里查看全文。";
       await paint();
     } catch (error) {
       if (alive && current === pdf) {
@@ -384,13 +416,22 @@ export async function mountReadingPane(
 
 export function usageText(run: ReadingRun): string {
   const u = run.completion.usage;
-  if (!u) return "未收到完整用量，费用未知（不代表免费）。";
-  return `输入 ${u.input.toLocaleString()} / 输出 ${u.output.toLocaleString()} tokens · 缓存 ${u.cached === undefined ? "未报告" : u.cached.toLocaleString()} · 估算 ¥${cost(u).toFixed(3)}${u.cached === undefined ? "（未扣缓存优惠）" : ""}`;
-}
-
-function getBudget(): number {
-  const value = Number(Zotero.Prefs.get(BUDGET_PREF, true));
-  return Number.isFinite(value) && value > 0 ? value : 0.5;
+  if (!u) return "用量尚未返回，费用待确认。";
+  const batch = Boolean(run.batches);
+  return (
+    (run.usageIncomplete ? "已报告部分：" : "") +
+    "输入 " +
+    u.input.toLocaleString() +
+    " / 输出 " +
+    u.output.toLocaleString() +
+    " tokens · 缓存 " +
+    (u.cached === undefined ? "未报告" : u.cached.toLocaleString()) +
+    " · " +
+    (batch ? "Batch " : "") +
+    "估算 ¥" +
+    cost(u, batch).toFixed(3) +
+    (run.usageIncomplete ? "，总费用尚不完整" : "")
+  );
 }
 
 function createSettings(
@@ -399,7 +440,7 @@ function createSettings(
   service: ReadingService,
 ): HTMLDetailsElement {
   const details = element(doc, "details", undefined, "pcp-reading-settings");
-  details.append(element(doc, "summary", "API Key 与费用设置"));
+  details.append(element(doc, "summary", "API Key 与费用说明"));
   const keyLabel = element(doc, "label", "Kimi API Key");
   const key = element(doc, "input");
   key.type = "password";
@@ -420,29 +461,16 @@ function createSettings(
   };
   refresh();
   details.append(keyState);
-  const budgetLabel = element(doc, "label", "单次生成预估上限（元）");
-  const budget = element(doc, "input");
-  budget.type = "number";
-  budget.min = "0.01";
-  budget.step = "0.01";
-  budget.value = String(getBudget());
-  budgetLabel.append(budget);
-  details.append(budgetLabel);
   const buttons = element(doc, "div", undefined, "pcp-reading-actions");
   const save = element(doc, "button", "保存设置");
   save.addEventListener("click", async () => {
-    const value = Number(budget.value);
-    if (!Number.isFinite(value) || value <= 0) {
-      status.textContent = "请输入有效的费用上限。";
-      return;
-    }
     save.disabled = true;
     try {
       if (key.value.trim()) await saveAPIKey(key.value);
-      Zotero.Prefs.set(BUDGET_PREF, String(value), true);
       key.value = "";
       refresh();
       status.textContent = "设置已保存。";
+      await service.resumeAll();
     } catch {
       status.textContent = "设置未保存，请检查 Key 格式或密码管理器。";
     } finally {
@@ -480,7 +508,7 @@ function createSettings(
     element(
       doc,
       "p",
-      `模型 ${MODEL}，关闭思考，一次生成六问。${PRICE_DATE} 价格快照：输入 / 缓存 / 输出分别 ¥6.5 / 1.1 / 27 每百万 tokens。上限用于生成前估算，实际以供应商账单为准。`,
+      `模型 ${MODEL}，开启思考，六问独立生成。按 ${PRICE_DATE} 单价快照及 Batch 六折估算：输入 / 缓存 / 输出分别 ¥3.9 / 0.66 / 16.2 每百万 tokens。显示实际返回的用量，不设消费上限。`,
       "pcp-reading-hint",
     ),
   );
@@ -501,6 +529,31 @@ export function renderMarkdown(target: HTMLElement, markdown: string): void {
           list.append(li);
         }
         into.append(list);
+        continue;
+      }
+      if (token.type === "table") {
+        const table = element(doc, "table");
+        const head = element(doc, "thead");
+        const heading = element(doc, "tr");
+        for (const cell of token.header) {
+          const th = element(doc, "th");
+          render(cell.tokens, th);
+          heading.append(th);
+        }
+        head.append(heading);
+        table.append(head);
+        const rows = element(doc, "tbody");
+        for (const row of token.rows) {
+          const tr = element(doc, "tr");
+          for (const cell of row) {
+            const td = element(doc, "td");
+            render(cell.tokens, td);
+            tr.append(td);
+          }
+          rows.append(tr);
+        }
+        table.append(rows);
+        into.append(table);
         continue;
       }
       if (token.type === "br") {

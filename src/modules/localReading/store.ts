@@ -1,4 +1,11 @@
-import type { Answers, Checks, Completion } from "./protocol";
+import type {
+  Answers,
+  BatchResult,
+  Checks,
+  Completion,
+  Question,
+} from "./protocol";
+import type { BatchStatus } from "./client";
 import { ReadingError } from "./runtime";
 
 // Zotero logs SQL parameters in debug mode, and includes them in SQL errors.
@@ -19,6 +26,21 @@ async function privateQuery(
   }
 }
 
+export interface QuestionProgress {
+  status: "pending" | "complete" | "failed";
+  parts: Completion[];
+  error?: string;
+}
+export interface ReadingBatch {
+  id?: string;
+  inputFile?: string;
+  outputFile?: string;
+  errorFile?: string;
+  submitting?: boolean;
+  status?: BatchStatus;
+  requests: { customID: string; question: Question }[];
+  results?: BatchResult[];
+}
 export interface ReadingRun {
   id: string;
   identity: string;
@@ -27,13 +49,18 @@ export interface ReadingRun {
   protocol: string;
   started: number;
   ended?: number;
-  status: "running" | "complete" | "failed" | "cancelled";
+  status: "running" | "complete" | "partial" | "failed" | "cancelled";
   message?: string;
   estimate?: number;
   completion: Completion;
   answers?: Answers;
   checks?: Checks;
   cleanupPending?: boolean;
+  account?: string;
+  batches?: ReadingBatch[];
+  questions?: Partial<Record<Question, QuestionProgress>>;
+  cancelRequested?: boolean;
+  usageIncomplete?: boolean;
 }
 
 function parseRun(payload: string): ReadingRun {
@@ -48,6 +75,7 @@ function parseRun(payload: string): ReadingRun {
 export interface RemoteFile {
   id: string;
   account: string;
+  runID?: string;
 }
 export interface ReadingStore {
   getText(hash: string): Promise<string | undefined>;
@@ -57,6 +85,7 @@ export interface ReadingStore {
     identity: string,
     completeOnly?: boolean,
   ): Promise<ReadingRun | undefined>;
+  active(): Promise<ReadingRun[]>;
   pending(account: string): Promise<RemoteFile[]>;
   addRemote(file: RemoteFile): Promise<void>;
   removeRemote(id: string): Promise<void>;
@@ -75,14 +104,22 @@ export function initReadingStore(): Promise<void> {
       "CREATE INDEX IF NOT EXISTS pcp_reading_identity ON pcp_reading_runs(identity, started)",
     );
     await privateQuery(
-      "CREATE TABLE IF NOT EXISTS pcp_reading_remote (id TEXT PRIMARY KEY, account TEXT NOT NULL)",
+      "CREATE TABLE IF NOT EXISTS pcp_reading_remote (id TEXT PRIMARY KEY, account TEXT NOT NULL, run_id TEXT)",
     );
-    // Interrupted attempts must never appear as active jobs after restarting.
+    const columns = (await privateQuery(
+      "PRAGMA table_info(pcp_reading_remote)",
+    )) as { name: string }[];
+    if (!columns.some((column) => column.name === "run_id"))
+      await privateQuery(
+        "ALTER TABLE pcp_reading_remote ADD COLUMN run_id TEXT",
+      );
+    // Submitted batches continue on Kimi and can be resumed after restart.
     const rows = (await privateQuery(
       "SELECT payload FROM pcp_reading_runs WHERE status = 'running'",
     )) as { payload: string }[];
     for (const row of rows) {
       const run = parseRun(row.payload);
+      if (run.batches?.length) continue;
       run.status = "failed";
       run.message = "上次运行被中断；用量可能不完整。可按需重新生成。";
       await privateQuery(
@@ -130,19 +167,26 @@ export const readingStore: ReadingStore = {
   async pending(account) {
     await initReadingStore();
     return (await privateQuery(
-      "SELECT id, account FROM pcp_reading_remote WHERE account = ?",
+      "SELECT id, account, run_id AS runID FROM pcp_reading_remote WHERE account = ? AND (run_id IS NULL OR NOT EXISTS (SELECT 1 FROM pcp_reading_runs r WHERE r.id = run_id AND r.status = 'running'))",
       [account],
     )) as RemoteFile[];
   },
   async addRemote(file) {
     await initReadingStore();
     await privateQuery(
-      "INSERT OR REPLACE INTO pcp_reading_remote (id, account) VALUES (?, ?)",
-      [file.id, file.account],
+      "INSERT OR REPLACE INTO pcp_reading_remote (id, account, run_id) VALUES (?, ?, ?)",
+      [file.id, file.account, file.runID ?? null],
     );
   },
   async removeRemote(id) {
     await initReadingStore();
     await privateQuery("DELETE FROM pcp_reading_remote WHERE id = ?", [id]);
+  },
+  async active() {
+    await initReadingStore();
+    const rows = (await privateQuery(
+      "SELECT payload FROM pcp_reading_runs WHERE status = 'running'",
+    )) as { payload: string }[];
+    return rows.map((row) => parseRun(row.payload));
   },
 };

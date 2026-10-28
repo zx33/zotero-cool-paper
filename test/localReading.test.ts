@@ -1,8 +1,8 @@
 import { assert } from "chai";
 import {
-  CompletionStream,
   KimiClient,
   type ReadingClient,
+  type RemoteBatch,
 } from "../src/modules/localReading/client";
 import {
   getAPIKey,
@@ -10,18 +10,25 @@ import {
   removeAPIKey,
 } from "../src/modules/localReading/credentials";
 import {
+  batchRequest,
   cost,
   decodeExtraction,
   makeSources,
   messagesFor,
-  preflight,
-  validate,
+  parseBatchResults,
+  QUESTION_IDS,
+  QUESTIONS,
+  PROTOCOL,
+  totalUsage,
+  type BatchRequest,
   type Completion,
+  type Question,
 } from "../src/modules/localReading/protocol";
 import {
   mountReadingPane,
   READING_PANE_ID,
   renderMarkdown,
+  usageText,
 } from "../src/modules/localReading/pane";
 import {
   ReadingError,
@@ -43,9 +50,9 @@ const paragraph = "本文比较两种方法，报告有限的实验结果。";
 const answerJSON = () =>
   JSON.stringify(
     Object.fromEntries(
-      Array.from({ length: 6 }, (_, i) => [
-        `q${i + 1}`,
-        { answer: `第${i + 1}问：${paragraph}`, sources: ["s1"] },
+      QUESTION_IDS.map((q, i) => [
+        q,
+        { answer: "第" + (i + 1) + "问：" + paragraph, sources: [] },
       ]),
     ),
   );
@@ -78,8 +85,15 @@ class MemoryStore implements ReadingStore {
           (!completeOnly || run.status === "complete"),
       );
   }
+  async active() {
+    return [...this.runs.values()].filter((run) => run.status === "running");
+  }
   async pending(account: string) {
-    return [...this.files.values()].filter((f) => f.account === account);
+    return [...this.files.values()].filter(
+      (f) =>
+        f.account === account &&
+        (!f.runID || this.runs.get(f.runID)?.status !== "running"),
+    );
   }
   async addRemote(file: RemoteFile) {
     this.files.set(file.id, file);
@@ -97,36 +111,107 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
+function responseRow(request: BatchRequest, content?: string, finish = "stop") {
+  const index = QUESTIONS.indexOf(
+    request.body.messages[2].content as (typeof QUESTIONS)[number],
+  );
+  return {
+    custom_id: request.custom_id,
+    response: {
+      status_code: 200,
+      body: {
+        choices: [
+          {
+            index: 0,
+            message: {
+              role: "assistant",
+              content: content ?? "第" + (index + 1) + "问：" + paragraph,
+            },
+            finish_reason: finish,
+          },
+        ],
+        usage: {
+          prompt_tokens: 10000,
+          completion_tokens: 900,
+          cached_tokens: 512,
+        },
+      },
+    },
+    error: null,
+  };
+}
+
 async function fixture() {
   const store = new MemoryStore();
   const bytes = new (runtime().TextEncoder)().encode("%PDF-1.7 synthetic test");
   const hash = await sha256(bytes);
   const pdf: PDFIdentity = {
-    identity: `1:TEST:${hash}`,
+    identity: "1:TEST:" + hash,
     hash,
     attachmentID: 1,
     path: "fixture.pdf",
   };
   const calls: string[] = [];
+  const submissions: BatchRequest[][] = [];
+  const inputs = new Map<string, BatchRequest[]>();
+  const remote = new Map<string, RemoteBatch>();
+  const files = new Map<string, string>();
   const client: ReadingClient = {
     async upload() {
       calls.push("upload");
       return "test-file";
     },
-    async extract() {
-      calls.push("extract");
-      return JSON.stringify({ content: paragraph });
+    async extract(id) {
+      calls.push("extract:" + id);
+      if (id === "test-file") return JSON.stringify({ content: paragraph });
+      return files.get(id)!;
     },
-    async remove() {
-      calls.push("delete");
+    async remove(id) {
+      calls.push("delete:" + id);
     },
-    async estimate() {
-      calls.push("estimate");
-      return 10000;
+    async uploadBatch(requests) {
+      calls.push("uploadBatch");
+      submissions.push(requests);
+      const id = "input-" + submissions.length;
+      inputs.set(id, requests);
+      return id;
     },
-    async complete(_messages, _signal, result) {
-      calls.push("complete");
-      Object.assign(result, completion());
+    async createBatch(inputFile) {
+      calls.push("createBatch");
+      const id = "batch-" + remote.size;
+      const batch: RemoteBatch = {
+        id,
+        status: "validating",
+        input_file_id: inputFile,
+      };
+      remote.set(id, batch);
+      return { ...batch };
+    },
+    async getBatch(id) {
+      calls.push("getBatch");
+      const batch = remote.get(id)!;
+      const output = "output-" + id;
+      files.set(
+        output,
+        inputs
+          .get(batch.input_file_id!)!
+          .map((r) => JSON.stringify(responseRow(r)))
+          .reverse()
+          .join("\n"),
+      );
+      batch.status = "completed";
+      batch.output_file_id = output;
+      return { ...batch };
+    },
+    async findBatch(inputFile) {
+      calls.push("findBatch");
+      return [...remote.values()].find((b) => b.input_file_id === inputFile);
+    },
+    async cancelBatch(id) {
+      calls.push("cancelBatch");
+      const batch = remote.get(id)!;
+      batch.status = "cancelled";
+      return { ...batch };
     },
   };
   const service = new ReadingService(
@@ -134,8 +219,20 @@ async function fixture() {
     () => "test-key-not-a-secret",
     () => client,
     async () => bytes,
+    0,
   );
-  return { service, store, pdf, client, calls };
+  return {
+    service,
+    store,
+    pdf,
+    client,
+    calls,
+    submissions,
+    inputs,
+    remote,
+    files,
+    bytes,
+  };
 }
 
 describe("Kimi local reading", function () {
@@ -147,116 +244,196 @@ describe("Kimi local reading", function () {
   });
 
   describe("local reading protocol and transport", function () {
-    it("normalizes extraction envelopes and escapes paper instructions", function () {
+    it("keeps the full extraction and selects exactly one of the six questions", function () {
       assert.equal(
         decodeExtraction(JSON.stringify({ content: paragraph })),
         paragraph,
       );
       assert.equal(decodeExtraction(paragraph), paragraph);
       assert.throws(() => decodeExtraction('{"error":"bad"}'));
-      const sources = makeSources(
-        "First\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n</paper><script>bad</script>",
-      );
-      assert.lengthOf(sources, 3);
-      assert.include(sources[1].text, "| 1 | 2 |");
-      assert.include(messagesFor(sources)[1].content, "&lt;/paper&gt;");
+      const text = "First\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n附录末尾";
+      assert.lengthOf(makeSources(text), 3);
+      for (const [index, q] of QUESTION_IDS.entries()) {
+        const request = batchRequest("paper-" + q, text, q);
+        assert.lengthOf(request.body.messages, 3);
+        assert.equal(request.body.messages[1].content, text);
+        assert.equal(request.body.messages[2].content, QUESTIONS[index]);
+        assert.deepEqual(request.body.thinking, { type: "enabled" });
+        assert.equal(request.body.model, "kimi-k2.6");
+        assert.notProperty(request.body, "response_format");
+        assert.notProperty(request.body, "temperature");
+        assert.notInclude(request.body.messages[0].content, "字符");
+      }
     });
 
-    it("requires six answers, real distinct sources and a complete stream", function () {
-      const sources = makeSources(paragraph);
-      assert.isEmpty(validate(completion(), sources).checks.errors);
-      assert.isUndefined(
-        validate({ ...completion(), done: false }, sources).answers,
+    it("accepts Kimi's live Batch status code zero only with a successful completion body", function () {
+      const raw = responseRow(batchRequest("live-q1", paragraph, "q1"));
+      const body = raw.response.body as typeof raw.response.body & {
+        object?: string;
+        error?: unknown;
+      };
+      raw.response.status_code = 0;
+      body.object = "chat.completion";
+      const parsed = parseBatchResults(JSON.stringify(raw))[0];
+      assert.isTrue(parsed.completion?.done);
+      assert.equal(parsed.completion?.usage?.input, 10000);
+      body.error = { message: "server failure" };
+      assert.isUndefined(parseBatchResults(JSON.stringify(raw))[0].completion);
+      delete body.error;
+      delete body.object;
+      assert.isUndefined(parseBatchResults(JSON.stringify(raw))[0].completion);
+    });
+
+    it("reads long Markdown responses and missing-usage results without shortening them", function () {
+      const long = "完整的方法解释与实验条件。".repeat(3000);
+      const request = batchRequest("long-q3", paragraph, "q3");
+      const raw = responseRow(request, long);
+      const results = parseBatchResults(JSON.stringify(raw));
+      assert.equal(results[0].completion?.content, long);
+      assert.isTrue(results[0].completion?.done);
+      assert.deepEqual(results[0].completion?.usage, {
+        input: 10000,
+        output: 900,
+        cached: 512,
+      });
+      assert.throws(
+        () =>
+          parseBatchResults(JSON.stringify(raw) + "\n" + JSON.stringify(raw)),
+        "重复",
       );
-      const bad = JSON.parse(answerJSON());
-      bad.q4.sources = ["s999"];
-      assert.isUndefined(
-        validate({ ...completion(), content: JSON.stringify(bad) }, sources)
-          .answers,
+      assert.throws(
+        () => parseBatchResults("private-malformed-output"),
+        "格式无效",
       );
-      bad.q4.sources = ["s1", "s1"];
+      const missing = JSON.parse(JSON.stringify(raw));
+      delete missing.response.body.usage;
       assert.isUndefined(
-        validate({ ...completion(), content: JSON.stringify(bad) }, sources)
-          .answers,
+        totalUsage(parseBatchResults(JSON.stringify(missing))),
       );
     });
 
-    it("repairs only literal known IDs and keeps long answers intact", function () {
-      const data = JSON.parse(answerJSON());
-      data.q4.sources = ["s1', 's2']}, "];
-      data.q6.answer = "长".repeat(200);
-      const raw = JSON.stringify(data);
-      const checked = validate(
-        { ...completion(), content: raw },
-        makeSources(paragraph + "\n\nMore"),
-      );
-      assert.deepEqual(checked.answers?.q4.sources, ["s1", "s2"]);
-      assert.equal(checked.answers?.q6.answer.length, 200);
-      assert.lengthOf(checked.checks.warnings, 2);
-      assert.include(raw, "s1', 's2");
-      data.q4.sources = ["s1 supports this claim"];
-      assert.isUndefined(
-        validate(
-          { ...completion(), content: JSON.stringify(data) },
-          makeSources(paragraph),
-        ).answers,
+    it("preserves thinking and the current question when continuing a truncated answer", function () {
+      const request = batchRequest("q4-more", paragraph, "q4", [
+        {
+          content: "已生成部分",
+          reasoning: "此前思考",
+          finish: "length",
+          done: false,
+        },
+      ]);
+      assert.deepEqual(request.body.thinking, { type: "enabled", keep: "all" });
+      assert.equal(request.body.messages[2].content, QUESTIONS[3]);
+      assert.equal(request.body.messages[3].content, "已生成部分");
+      assert.equal(request.body.messages[3].reasoning_content, "此前思考");
+      const raw = responseRow(request, "", "length");
+      Object.assign(raw.response.body.choices[0].message, {
+        content: null,
+        reasoning_content: "仍在思考",
+      });
+      assert.equal(
+        parseBatchResults(JSON.stringify(raw))[0].completion?.reasoning,
+        "仍在思考",
       );
     });
 
-    it("reads arbitrarily split SSE including the final usage-only chunk", function () {
-      const result: Completion = { content: "", done: false };
-      const parser = new CompletionStream(result);
-      const wire =
-        ': keepalive\r\n\r\ndata: {"choices":[{"index":0,"delta":{"content":"你好"}}]}\r\n\r\ndata: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":100,"completion_tokens":20,"prompt_tokens_details":{"cached_tokens":50}}}\n\ndata: [DONE]\n\n';
-      for (const char of wire) parser.feed(char);
-      assert.equal(result.content, "你好");
-      assert.isTrue(result.done);
-      assert.equal(result.finish, "stop");
-      assert.deepEqual(result.usage, { input: 100, output: 20, cached: 50 });
-      assert.throws(() => parser.feed('data: {"choices":[]}\n\n'));
-    });
-
-    it("uses cached tokens as a subset and blocks excessive budgets before generation", function () {
+    it("shows Batch pricing from actual usage and keeps unknown usage unknown", function () {
       assert.closeTo(
         cost({ input: 10000, output: 1000, cached: 512 }),
         0.0892352,
-        0.00000001,
+        1e-8,
+      );
+      assert.closeTo(
+        cost({ input: 10000, output: 1000, cached: 512 }, true),
+        0.05354112,
+        1e-8,
       );
       assert.isAbove(
-        cost({ input: 10000, output: 1000 }),
-        cost({ input: 10000, output: 1000, cached: 512 }),
+        cost({ input: 10000, output: 1000 }, true),
+        cost({ input: 10000, output: 1000, cached: 512 }, true),
       );
-      assert.throws(() => preflight(10000, 0.01));
-      assert.throws(() => preflight(260000, 10));
-      assert.throws(() => preflight(NaN, 0.5));
-      assert.isBelow(preflight(10000, 0.5), 0.5);
+      const u = totalUsage([
+        { customID: "a", completion: completion() },
+        {
+          customID: "b",
+          completion: { ...completion(), usage: { input: 200, output: 30 } },
+        },
+      ]);
+      assert.equal(u?.input, 10200);
+      assert.isUndefined(u?.cached);
     });
 
-    it("sends only to the official host without redirects or cookies", async function () {
+    it("uses native file and Batch APIs with independent JSONL requests", async function () {
+      const win = runtime();
       const requests: { url: string; init: RequestInit }[] = [];
       const client = new KimiClient("dummy-private-value", (async (
         url,
         init,
       ) => {
         requests.push({ url: String(url), init: init! });
-        return new (runtime().Response)('{"data":{"total_tokens":1234}}', {
-          status: 200,
-          headers: { "Content-Type": "application/json" },
-        });
+        if (String(url).endsWith("/files")) {
+          const form = init!.body as FormData;
+          const file = form.get("file") as File;
+          if (form.get("purpose") === "file-extract")
+            assert.equal(file.name, "paper.pdf");
+          else {
+            assert.equal(form.get("purpose"), "batch");
+            assert.equal(file.name, "questions.jsonl");
+            const lines = (await file.text())
+              .trim()
+              .split("\n")
+              .map((line) => JSON.parse(line));
+            assert.lengthOf(lines, 6);
+            assert.lengthOf(new Set(lines.map((line) => line.custom_id)), 6);
+            assert.deepEqual(
+              lines.map((line) => line.body.messages[2].content),
+              [...QUESTIONS],
+            );
+          }
+          return new win.Response('{"id":"file-123"}');
+        }
+        if (init!.method === "POST" && String(url).endsWith("/batches")) {
+          assert.deepEqual(JSON.parse(String(init!.body)), {
+            input_file_id: "file-123",
+            endpoint: "/v1/chat/completions",
+            completion_window: "24h",
+          });
+          return new win.Response('{"id":"batch-123","status":"validating"}');
+        }
+        if (String(url).endsWith("/cancel"))
+          return new win.Response('{"id":"batch-123","status":"cancelling"}');
+        if (String(url).includes("?limit="))
+          return new win.Response(
+            '{"data":[{"id":"batch-123","status":"completed","input_file_id":"file-123"}],"has_more":false}',
+          );
+        return new win.Response(
+          '{"id":"batch-123","status":"completed","output_file_id":"output-123"}',
+        );
       }) as typeof fetch);
+      await client.upload(new win.TextEncoder().encode("%PDF-1.7"));
+      await client.uploadBatch(
+        QUESTION_IDS.map((q) => batchRequest(q, paragraph, q)),
+      );
+      const batch = await client.createBatch("file-123");
+      assert.equal(batch.id, "batch-123");
       assert.equal(
-        await client.estimate(
-          messagesFor(makeSources(paragraph)),
-          new (runtime().AbortController)().signal,
-        ),
-        1234,
+        (await client.getBatch(batch.id, new win.AbortController().signal))
+          .output_file_id,
+        "output-123",
       );
       assert.equal(
-        requests[0].url,
-        "https://api.moonshot.cn/v1/tokenizers/estimate-token-count",
+        (await client.findBatch("file-123", new win.AbortController().signal))
+          ?.id,
+        batch.id,
       );
-      assert.equal(requests[0].init.redirect, "error");
-      assert.equal(requests[0].init.credentials, "omit");
+      assert.equal((await client.cancelBatch(batch.id)).status, "cancelling");
+      for (const request of requests) {
+        assert.isTrue(request.url.startsWith("https://api.moonshot.cn/v1/"));
+        assert.equal(request.init.redirect, "error");
+        assert.equal(request.init.credentials, "omit");
+      }
+    });
+
+    it("does not expose provider error bodies or allow arbitrary endpoints", async function () {
       const fail = new KimiClient(
         "dummy-private-value",
         (async () =>
@@ -264,131 +441,310 @@ describe("Kimi local reading", function () {
             status: 401,
           })) as typeof fetch,
       );
-      let message = "";
       try {
-        await fail.estimate([], new (runtime().AbortController)().signal);
+        await fail.getBatch(
+          "batch-1",
+          new (runtime().AbortController)().signal,
+        );
+        assert.fail("Expected HTTP failure");
       } catch (error) {
-        message = (error as Error).message;
+        assert.include(String(error), "401");
+        assert.equal((error as ReadingError).status, 401);
+        assert.notInclude(String(error), "dummy-private-value");
       }
-      assert.include(message, "401");
-      assert.notInclude(message, "dummy-private-value");
-    });
-
-    it("uploads an anonymous PDF name and consumes streamed UTF-8 through native fetch types", async function () {
-      const win = runtime();
-      const chunks = new win.TextEncoder().encode(
-        `data: ${JSON.stringify({ choices: [{ delta: { content: answerJSON() }, finish_reason: "stop" }] })}\n\ndata: {"choices":[],"usage":{"prompt_tokens":10000,"completion_tokens":900}}\n\ndata: [DONE]\n\n`,
-      );
-      const client = new KimiClient("dummy", (async (url, init) => {
-        if (String(url).endsWith("/files")) {
-          const form = init!.body as FormData;
-          assert.equal(form.get("purpose"), "file-extract");
-          assert.equal((form.get("file") as File).name, "paper.pdf");
-          return new win.Response('{"id":"file-123"}');
-        }
-        const stream = new win.ReadableStream<Uint8Array>({
-          start(controller) {
-            for (let i = 0; i < chunks.length; i += 7)
-              controller.enqueue(chunks.slice(i, i + 7));
-            controller.close();
-          },
-        });
-        return new win.Response(stream, {
-          headers: { "Content-Type": "text/event-stream" },
-        });
-      }) as typeof fetch);
-      assert.equal(
-        await client.upload(new win.TextEncoder().encode("%PDF-1.7")),
-        "file-123",
-      );
-      const result: Completion = { content: "", done: false };
-      await client.complete(
-        messagesFor(makeSources(paragraph)),
-        new win.AbortController().signal,
-        result,
-        () => {},
-      );
-      assert.equal(result.content, answerJSON());
-      assert.isTrue(result.done);
-      assert.equal(result.usage?.input, 10000);
+      try {
+        await fail.getBatch(
+          "../private",
+          new (runtime().AbortController)().signal,
+        );
+        assert.fail("Expected invalid path");
+      } catch (error) {
+        assert.include(String(error), "请求地址无效");
+      }
     });
   });
 
   describe("local reading jobs and durable storage", function () {
     this.timeout(15000);
 
-    it("generates only when asked, deduplicates clicks and reuses extraction", async function () {
+    it("submits six questions once, maps unordered results, and reuses document extraction", async function () {
       const f = await fixture();
       assert.isEmpty(f.calls);
-      const first = f.service.start(f.pdf, 0.5);
-      assert.strictEqual(f.service.start(f.pdf, 0.5), first);
+      const first = f.service.start(f.pdf);
+      assert.strictEqual(f.service.start(f.pdf), first);
       const run = await first;
       assert.equal(run.status, "complete");
-      assert.deepEqual(f.calls, [
-        "upload",
-        "extract",
-        "delete",
-        "estimate",
-        "complete",
-      ]);
-      assert.isEmpty(await f.store.pending("none"));
+      assert.lengthOf(f.submissions, 1);
+      assert.lengthOf(f.submissions[0], 6);
+      assert.equal(run.completion.content, answerJSON());
+      assert.equal(run.completion.usage?.input, 60000);
       assert.equal(f.store.files.size, 0);
       assert.notInclude(
         JSON.stringify([...f.store.runs.values()]),
         "test-key-not-a-secret",
       );
       f.calls.length = 0;
-      assert.equal((await f.service.start(f.pdf, 0.5)).status, "complete");
-      assert.deepEqual(f.calls, ["estimate", "complete"]);
+      assert.equal((await f.service.start(f.pdf)).status, "complete");
+      assert.notInclude(f.calls, "upload");
+      assert.notInclude(f.calls, "extract:test-file");
+      assert.lengthOf(f.submissions, 2);
     });
 
-    it("keeps a successful report when regeneration is invalid or over budget", async function () {
+    it("completes expensive and long answers without a spending or character cap", async function () {
       const f = await fixture();
-      const original = await f.service.start(f.pdf, 0.5);
-      f.client.complete = async (_m, _s, result) => {
-        Object.assign(result, completion(), { content: '{"q1":{}}' });
-      };
-      const failed = await f.service.start(f.pdf, 0.5);
-      assert.equal(failed.status, "failed");
-      assert.equal(
-        (await f.store.latest(f.pdf.identity, true))?.id,
-        original.id,
-      );
-      assert.isNotEmpty(failed.completion.content);
-      assert.isDefined(failed.completion.usage);
-      f.calls.length = 0;
-      const budget = await f.service.start(f.pdf, 0.01);
-      assert.equal(budget.status, "failed");
-      assert.include(budget.message!, "超过");
-      assert.deepEqual(f.calls, ["estimate"]);
-    });
-
-    it("cancels in-flight generation without replacing the previous success", async function () {
-      const f = await fixture();
-      const original = await f.service.start(f.pdf, 0.5);
-      const started = deferred<void>();
-      f.client.complete = async (_m, signal, result) => {
-        result.content = "partial";
-        started.resolve();
-        await new Promise<void>((_resolve, reject) =>
-          signal.addEventListener("abort", () => reject(new Error("cancel")), {
-            once: true,
-          }),
+      const get = f.client.getBatch;
+      const long = "保留方法细节、公式和实验条件。".repeat(1000);
+      f.client.getBatch = async (id, signal) => {
+        const batch = await get(id, signal);
+        const rows = f.files
+          .get(batch.output_file_id!)!
+          .split("\n")
+          .map((line) => JSON.parse(line));
+        for (const row of rows) {
+          row.response.body.choices[0].message.content = long;
+          row.response.body.usage.prompt_tokens = 1000000;
+        }
+        f.files.set(
+          batch.output_file_id!,
+          rows.map((row) => JSON.stringify(row)).join("\n"),
         );
+        return batch;
       };
-      const next = f.service.start(f.pdf, 0.5);
-      await started.promise;
-      f.service.cancel(f.pdf.identity);
-      const cancelled = await next;
+      const run = await f.service.start(f.pdf);
+      assert.equal(run.status, "complete");
+      for (const q of QUESTION_IDS)
+        assert.equal(run.answers?.[q]?.answer, long);
+      assert.isAbove(cost(run.completion.usage!, true), 20);
+    });
+
+    it("preserves successful questions and retries only the failed question", async function () {
+      const f = await fixture();
+      const get = f.client.getBatch;
+      f.client.getBatch = async (id, signal) => {
+        const batch = await get(id, signal);
+        const requests = f.inputs.get(batch.input_file_id!)!;
+        f.files.set(
+          batch.output_file_id!,
+          requests
+            .map((r) =>
+              JSON.stringify(
+                r.body.messages[2].content === QUESTIONS[3]
+                  ? {
+                      custom_id: r.custom_id,
+                      response: { status_code: 500 },
+                      error: { message: "private echo" },
+                    }
+                  : responseRow(r),
+              ),
+            )
+            .join("\n"),
+        );
+        return batch;
+      };
+      const partial = await f.service.start(f.pdf);
+      assert.equal(partial.status, "partial");
+      assert.lengthOf(Object.keys(partial.answers!), 5);
+      assert.isTrue(partial.usageIncomplete);
+      assert.notInclude(JSON.stringify(partial), "private echo");
+      f.client.getBatch = get;
+      const completed = await f.service.start(f.pdf);
+      assert.equal(completed.id, partial.id);
+      assert.equal(completed.status, "complete");
+      assert.lengthOf(f.submissions[1], 1);
+      assert.equal(f.submissions[1][0].body.messages[2].content, QUESTIONS[3]);
+      assert.equal(completed.completion.usage?.input, 60000);
+    });
+
+    it("continues only a length-ended question and preserves both parts and their usage", async function () {
+      const f = await fixture();
+      const get = f.client.getBatch;
+      f.client.getBatch = async (id, signal) => {
+        const batch = await get(id, signal);
+        const requests = f.inputs.get(batch.input_file_id!)!;
+        f.files.set(
+          batch.output_file_id!,
+          requests
+            .map((r) =>
+              JSON.stringify(
+                r.body.messages[2].content === QUESTIONS[2]
+                  ? responseRow(
+                      r,
+                      r.body.messages.length === 3 ? "方法前半" : "方法后半",
+                      r.body.messages.length === 3 ? "length" : "stop",
+                    )
+                  : responseRow(r),
+              ),
+            )
+            .join("\n"),
+        );
+        return batch;
+      };
+      const run = await f.service.start(f.pdf);
+      assert.equal(run.status, "complete");
+      assert.equal(run.answers?.q3?.answer, "方法前半\n\n方法后半");
+      assert.lengthOf(f.submissions, 2);
+      assert.lengthOf(f.submissions[1], 1);
+      assert.equal(f.submissions[1][0].body.messages[3].content, "方法前半");
+      assert.equal(run.completion.usage?.input, 70000);
+    });
+
+    it("stops a no-progress continuation while retaining the incomplete answer", async function () {
+      const f = await fixture();
+      const get = f.client.getBatch;
+      f.client.getBatch = async (id, signal) => {
+        const batch = await get(id, signal);
+        const requests = f.inputs.get(batch.input_file_id!)!;
+        f.files.set(
+          batch.output_file_id!,
+          requests
+            .map((r) => JSON.stringify(responseRow(r, "相同片段", "length")))
+            .join("\n"),
+        );
+        return batch;
+      };
+      const run = await f.service.start(f.pdf);
+      assert.equal(run.status, "failed");
+      assert.lengthOf(f.submissions, 2);
+      assert.equal(run.questions?.q1?.parts[0].content, "相同片段");
+      assert.include(run.questions?.q1?.error ?? "", "新增内容");
+      assert.equal(run.completion.usage?.input, 120000);
+    });
+
+    it("retries a rejected submission instead of looking for a nonexistent batch", async function () {
+      const f = await fixture();
+      const create = f.client.createBatch;
+      f.client.createBatch = async () => {
+        throw new ReadingError("API Key 无效", 401);
+      };
+      const rejected = await f.service.start(f.pdf);
+      assert.equal(rejected.status, "failed");
+      assert.isFalse(rejected.batches?.[0].submitting);
+      assert.include(f.calls, "delete:input-1");
+      f.client.createBatch = create;
+      const completed = await f.service.start(f.pdf);
+      assert.equal(completed.status, "complete");
+      assert.notInclude(f.calls, "findBatch");
+      assert.equal(f.calls.filter((call) => call === "upload").length, 1);
+    });
+
+    it("allows a new key to start after a terminal failure", async function () {
+      const f = await fixture();
+      const create = f.client.createBatch;
+      f.client.createBatch = async () => {
+        throw new ReadingError("API Key 无效", 401);
+      };
+      const rejected = await f.service.start(f.pdf);
+      f.client.createBatch = create;
+      const service = new ReadingService(
+        f.store,
+        () => "replacement-key",
+        () => f.client,
+        async () => f.bytes,
+        0,
+      );
+      const completed = await service.start(f.pdf);
+      assert.equal(completed.status, "complete");
+      assert.notEqual(completed.id, rejected.id);
+      assert.notEqual(completed.account, rejected.account);
+      assert.equal(f.calls.filter((call) => call === "upload").length, 1);
+      service.shutdown();
+    });
+
+    it("does not mark a local upload failure as a submitted cloud batch", async function () {
+      const f = await fixture();
+      const upload = f.client.uploadBatch;
+      f.client.uploadBatch = async () => {
+        throw new ReadingError("请求文件超过 100 MB");
+      };
+      const failed = await f.service.start(f.pdf);
+      assert.equal(failed.status, "failed");
+      assert.notInclude(f.calls, "createBatch");
+      f.client.uploadBatch = upload;
+      const completed = await f.service.start(f.pdf);
+      assert.equal(completed.status, "complete");
+      assert.notInclude(f.calls, "findBatch");
+    });
+
+    it("recovers an accepted submission after its response is lost without creating another batch", async function () {
+      const f = await fixture();
+      const create = f.client.createBatch;
+      f.client.createBatch = async (input) => {
+        await create(input);
+        throw new ReadingError("Network interrupted");
+      };
+      const paused = await f.service.start(f.pdf);
+      assert.equal(paused.status, "running");
+      assert.isTrue(paused.batches?.[0].submitting);
+      const recovered = await f.service.start(f.pdf);
+      assert.equal(recovered.status, "complete");
+      assert.equal(f.calls.filter((call) => call === "createBatch").length, 1);
+      assert.include(f.calls, "findBatch");
+      assert.lengthOf(f.submissions, 1);
+    });
+
+    it("resumes a persisted batch after shutdown without cancelling or resubmitting it", async function () {
+      const f = await fixture();
+      const entered = deferred<void>();
+      const get = f.client.getBatch;
+      f.client.getBatch = async (_id, signal) => {
+        entered.resolve();
+        await new Promise<void>((_resolve, reject) =>
+          signal.addEventListener(
+            "abort",
+            () => reject(new Error("detached")),
+            { once: true },
+          ),
+        );
+        throw new Error("unreachable");
+      };
+      const pending = f.service.start(f.pdf);
+      await entered.promise;
+      const active = f.service.job(f.pdf.identity)!.run;
+      assert.lengthOf(await f.store.pending(active.account!), 0);
+      f.service.shutdown();
+      const paused = await pending;
+      assert.equal(paused.status, "running");
+      assert.notInclude(f.calls, "cancelBatch");
+      f.client.getBatch = get;
+      const resumed = new ReadingService(
+        f.store,
+        () => "test-key-not-a-secret",
+        () => f.client,
+        async () => f.bytes,
+        0,
+      );
+      await resumed.resumeAll();
+      await waitUntil(() => !resumed.busy());
+      assert.equal((await f.store.latest(f.pdf.identity))?.status, "complete");
+      assert.lengthOf(f.submissions, 1);
+      assert.equal(f.calls.filter((c) => c === "createBatch").length, 1);
+      resumed.shutdown();
+    });
+
+    it("cancels the remote batch and keeps the previous completed report", async function () {
+      const f = await fixture();
+      const original = await f.service.start(f.pdf);
+      const entered = deferred<void>();
+      const release = deferred<void>();
+      f.client.getBatch = async (id) => {
+        entered.resolve();
+        await release.promise;
+        return { ...f.remote.get(id)!, status: "in_progress" };
+      };
+      const pending = f.service.start(f.pdf);
+      await entered.promise;
+      await f.service.cancel(f.pdf.identity);
+      release.resolve();
+      const cancelled = await pending;
       assert.equal(cancelled.status, "cancelled");
-      assert.equal(cancelled.completion.content, "partial");
+      assert.include(f.calls, "cancelBatch");
       assert.equal(
         (await f.store.latest(f.pdf.identity, true))?.id,
         original.id,
       );
     });
 
-    it("waits for an uploading file ID, deletes it after cancellation, and never generates", async function () {
+    it("waits for an upload ID, deletes it after cancellation, and never submits questions", async function () {
       const f = await fixture();
       const entered = deferred<void>();
       const upload = deferred<string>();
@@ -396,58 +752,96 @@ describe("Kimi local reading", function () {
         entered.resolve();
         return upload.promise;
       };
-      const run = f.service.start(f.pdf, 0.5);
+      const pending = f.service.start(f.pdf);
       await entered.promise;
-      f.service.cancel(f.pdf.identity);
+      await f.service.cancel(f.pdf.identity);
       upload.resolve("cancelled-file");
-      assert.equal((await run).status, "cancelled");
-      assert.deepEqual(f.calls, ["delete"]);
+      assert.equal((await pending).status, "cancelled");
+      assert.deepEqual(f.calls, ["delete:cancelled-file"]);
       assert.equal(f.store.files.size, 0);
     });
 
-    it("records failed cleanup and supports an explicit retry without model calls", async function () {
+    it("keeps results for rereading after a malformed download instead of resubmitting questions", async function () {
+      const f = await fixture();
+      const extract = f.client.extract;
+      f.client.extract = async (id, signal) =>
+        id.startsWith("output-") ? "invalid" : extract(id, signal);
+      const paused = await f.service.start(f.pdf);
+      assert.equal(paused.status, "running");
+      assert.isFalse(f.calls.some((c) => c.startsWith("delete:output")));
+      f.client.extract = extract;
+      assert.equal((await f.service.start(f.pdf)).status, "complete");
+      assert.lengthOf(f.submissions, 1);
+    });
+
+    it("records failed cleanup and retries deletion without new model requests", async function () {
       const f = await fixture();
       f.client.remove = async () => {
         throw new Error("offline");
       };
-      const run = await f.service.start(f.pdf, 0.5);
+      const run = await f.service.start(f.pdf);
       assert.equal(run.status, "complete");
       assert.isTrue(run.cleanupPending);
-      assert.equal(f.store.files.size, 1);
-      f.client.remove = async () => {
-        f.calls.push("delete");
+      assert.equal(f.store.files.size, 3);
+      f.client.remove = async (id) => {
+        f.calls.push("delete:" + id);
       };
       f.calls.length = 0;
       assert.equal(await f.service.cleanup(), 0);
-      assert.deepEqual(f.calls, ["delete"]);
+      assert.lengthOf(f.calls, 3);
+      assert.isTrue(f.calls.every((c) => c.startsWith("delete:")));
       assert.equal(f.store.files.size, 0);
     });
 
-    it("stops before upload when the PDF changed", async function () {
+    it("stops before upload when the selected PDF has changed", async function () {
       const f = await fixture();
-      const run = await f.service.start({ ...f.pdf, hash: "changed" }, 0.5);
+      const run = await f.service.start({ ...f.pdf, hash: "changed" });
       assert.equal(run.status, "failed");
       assert.include(run.message!, "PDF 已发生变化");
       assert.isEmpty(f.calls);
     });
 
-    it("retains a cleanup warning if both the cleanup ledger and remote deletion fail", async function () {
+    it("keeps active Batch input files out of native cleanup queries", async function () {
       const f = await fixture();
-      f.store.addRemote = async () => {
-        throw new Error("disk unavailable");
+      const run = await f.service.start(f.pdf);
+      run.id = "active-" + Zotero.Utilities.randomString(10);
+      run.identity = run.id;
+      run.status = "running";
+      const file = {
+        id: run.id + "-file",
+        account: run.account!,
+        runID: run.id,
       };
-      f.client.remove = async () => {
-        throw new Error("offline");
-      };
-      const run = await f.service.start(f.pdf, 0.5);
-      assert.equal(run.status, "failed");
-      assert.isTrue(run.cleanupPending);
-      assert.notInclude(f.calls, "complete");
+      try {
+        await readingStore.save(run);
+        await readingStore.addRemote(file);
+        assert.notInclude(
+          (await readingStore.pending(run.account!)).map((f) => f.id),
+          file.id,
+        );
+        assert.include(
+          (await readingStore.active()).map((r) => r.id),
+          run.id,
+        );
+        run.status = "complete";
+        await readingStore.save(run);
+        assert.include(
+          (await readingStore.pending(run.account!)).map((f) => f.id),
+          file.id,
+        );
+      } finally {
+        await readingStore.removeRemote(file.id);
+        await Zotero.DB.queryAsync(
+          "DELETE FROM pcp_reading_runs WHERE id = ?",
+          [run.id],
+          { debug: false },
+        );
+      }
     });
 
     it("stores reports and extraction in Zotero SQLite without affecting the previous success", async function () {
       const f = await fixture();
-      const run = await f.service.start(f.pdf, 0.5);
+      const run = await f.service.start(f.pdf);
       run.identity = `test-${Zotero.Utilities.randomString(12)}`;
       await readingStore.save(run);
       await readingStore.putText(run.identity, paragraph);
@@ -525,7 +919,7 @@ describe("Kimi local reading", function () {
 
     it("keeps reading content and remote identifiers out of native debug logs", async function () {
       const f = await fixture();
-      const run = await f.service.start(f.pdf, 0.5);
+      const run = await f.service.start(f.pdf);
       const sentinel = `private-reading-${Zotero.Utilities.randomString(12)}`;
       run.identity = sentinel;
       run.completion.content = sentinel;
@@ -628,7 +1022,7 @@ describe("Kimi local reading", function () {
   describe("local reading pane", function () {
     this.timeout(15000);
 
-    it("shows cached answers without requests and generates only from its button", async function () {
+    it("shows complete cached Markdown and has no spending-limit setting", async function () {
       const f = await fixture();
       const doc = Zotero.getMainWindow().document;
       const body = doc.createElementNS(
@@ -644,41 +1038,37 @@ describe("Kimi local reading", function () {
       try {
         await mountReadingPane(body, [item], 1, f.service, async () => f.pdf);
         assert.isEmpty(f.calls);
+        assert.notExists(body.querySelector('input[type="number"]'));
         const button = body.querySelector(
           '[data-action="generate"]',
         ) as HTMLButtonElement;
-        assert.isFalse(button.disabled);
         button.click();
         await waitUntil(
           () =>
             !f.service.busy() &&
-            Boolean(body.querySelector(".pcp-reading-question")),
+            body.querySelectorAll(".pcp-reading-answer").length === 6,
         );
-        assert.equal(button.textContent, "重新生成");
+        assert.equal(button.textContent, "重新生成六问");
         assert.lengthOf(body.querySelectorAll(".pcp-reading-question"), 6);
-        const refs = body.querySelector(
-          ".pcp-reading-refs button",
-        ) as HTMLButtonElement;
-        refs.click();
         assert.include(
           body.querySelector(".pcp-reading-source pre")!.textContent!,
           paragraph,
         );
+        assert.include(body.textContent!, "Batch 估算");
         for (const selector of [
           ".pcp-reading",
           "select",
           ".pcp-reading-question",
           ".pcp-reading-source",
-        ]) {
+        ])
           assert.isAtMost(
             body.querySelector(selector)!.getBoundingClientRect().width,
             220.5,
           );
-        }
         f.calls.length = 0;
         await mountReadingPane(body, [item], 1, f.service, async () => f.pdf);
         assert.isEmpty(f.calls);
-        assert.lengthOf(body.querySelectorAll(".pcp-reading-question"), 6);
+        assert.lengthOf(body.querySelectorAll(".pcp-reading-answer"), 6);
       } finally {
         await mountReadingPane(body, [], undefined, f.service);
         body.remove();
@@ -686,14 +1076,15 @@ describe("Kimi local reading", function () {
       }
     });
 
-    it("does not write an old job's result into a newly selected paper", async function () {
+    it("does not display an old paper's batch result in the newly selected pane", async function () {
       const f = await fixture();
       const entered = deferred<void>();
       const finish = deferred<void>();
-      f.client.complete = async (_m, _s, result) => {
+      const get = f.client.getBatch;
+      f.client.getBatch = async (id, signal) => {
         entered.resolve();
         await finish.promise;
-        Object.assign(result, completion());
+        return get(id, signal);
       };
       const doc = Zotero.getMainWindow().document;
       const body = doc.createElementNS(
@@ -720,7 +1111,7 @@ describe("Kimi local reading", function () {
         finish.resolve();
         await waitUntil(() => !f.service.busy());
         await Zotero.Promise.delay(30);
-        assert.lengthOf(body.querySelectorAll(".pcp-reading-question"), 0);
+        assert.lengthOf(body.querySelectorAll(".pcp-reading-answer"), 0);
         assert.isDefined(await f.store.latest(f.pdf.identity, true));
         assert.isUndefined(await f.store.latest(other.identity, true));
       } finally {
@@ -730,7 +1121,7 @@ describe("Kimi local reading", function () {
       }
     });
 
-    it("renders model Markdown without executable HTML, links or remote resources", function () {
+    it("renders Markdown tables and long content without loading HTML or remote resources", function () {
       const doc = Zotero.getMainWindow().document;
       const target = doc.createElementNS(
         "http://www.w3.org/1999/xhtml",
@@ -738,13 +1129,29 @@ describe("Kimi local reading", function () {
       ) as HTMLElement;
       renderMarkdown(
         target,
-        '**bold** [click](javascript:alert(1)) ![remote](https://example.invalid/x.png)\n\n<script>alert(1)</script><img src="https://example.invalid/y.png" onerror="alert(1)">',
+        "**bold** [click](javascript:alert(1)) ![remote](https://example.invalid/x.png)\n\n" +
+          "| Method | Result |\n|---|---|\n| A | **2.5** |\n\n" +
+          '<script>alert(1)</script><img src="https://example.invalid/y.png" onerror="alert(1)">',
       );
       assert.lengthOf(
         target.querySelectorAll("script,img,iframe,a,style,link,object"),
         0,
       );
       assert.equal(target.querySelector("strong")?.textContent, "bold");
+      assert.equal(target.querySelector("tbody td strong")?.textContent, "2.5");
+      assert.lengthOf(target.querySelectorAll("th"), 2);
+    });
+
+    it("keeps old cached reports readable and distinguishes incomplete usage", async function () {
+      const f = await fixture();
+      const run = await f.service.start(f.pdf);
+      run.protocol = "six-questions-v2.1-text";
+      delete run.batches;
+      assert.notInclude(usageText(run), "Batch");
+      run.usageIncomplete = true;
+      assert.include(usageText(run), "总费用尚不完整");
+      delete run.completion.usage;
+      assert.include(usageText(run), "费用待确认");
     });
   });
 });
@@ -752,7 +1159,7 @@ describe("Kimi local reading", function () {
 async function waitUntil(check: () => boolean) {
   const start = Date.now();
   while (!check()) {
-    if (Date.now() - start > 5000) throw new Error("Timed out waiting for UI");
+    if (Date.now() - start > 5000) assert.fail("Timed out waiting for UI");
     await Zotero.Promise.delay(20);
   }
 }

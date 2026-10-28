@@ -1,9 +1,13 @@
 import prompt from "./prompt.json";
+import { ReadingError } from "./runtime";
 
 export const MODEL = "kimi-k2.6";
-export const PROTOCOL = "six-questions-v2.1-text";
-export const MAX_OUTPUT = 4096;
+export const PROTOCOL = "six-questions-v3-batch";
+// Per-request allowance, including thinking. Length-ended answers continue;
+// there is no per-answer character or spending limit.
+export const MAX_OUTPUT = 32768;
 export const PRICE_DATE = "2026-09-26";
+export const BATCH_DISCOUNT = 0.6;
 export const QUESTIONS = [
   "这篇论文试图解决什么问题？",
   "有哪些相关研究？",
@@ -12,13 +16,14 @@ export const QUESTIONS = [
   "有什么可以进一步探索的点？",
   "总结一下论文的主要内容",
 ] as const;
-export const LIMITS = [250, 300, 600, 750, 200, 160];
-export type Question = "q1" | "q2" | "q3" | "q4" | "q5" | "q6";
+export const QUESTION_IDS = ["q1", "q2", "q3", "q4", "q5", "q6"] as const;
+export type Question = (typeof QUESTION_IDS)[number];
 export interface Answer {
   answer: string;
+  // Retained for locally saved v2 reports. New Markdown answers cite the paper.
   sources: string[];
 }
-export type Answers = Record<Question, Answer>;
+export type Answers = Partial<Record<Question, Answer>>;
 export interface Source {
   id: string;
   text: string;
@@ -30,6 +35,7 @@ export interface Usage {
 }
 export interface Completion {
   content: string;
+  reasoning?: string;
   finish?: string;
   done: boolean;
   usage?: Usage;
@@ -37,6 +43,27 @@ export interface Completion {
 export interface Checks {
   errors: string[];
   warnings: string[];
+}
+export interface Message {
+  role: "system" | "user" | "assistant";
+  content: string;
+  reasoning_content?: string;
+}
+export interface BatchRequest {
+  custom_id: string;
+  method: "POST";
+  url: "/v1/chat/completions";
+  body: {
+    model: typeof MODEL;
+    messages: Message[];
+    thinking: { type: "enabled"; keep?: "all" };
+    max_tokens: number;
+  };
+}
+export interface BatchResult {
+  customID: string;
+  completion?: Completion;
+  error?: string;
 }
 
 export function decodeExtraction(raw: string): string {
@@ -52,9 +79,8 @@ export function decodeExtraction(raw: string): string {
       : value && typeof value === "object" && "content" in value
         ? value.content
         : null;
-  if (typeof text !== "string" || !text.trim()) {
-    throw new Error("文件解析未返回可读正文，无法生成解读。");
-  }
+  if (typeof text !== "string" || !text.trim())
+    throw new ReadingError("文件解析未返回可读正文，无法生成解读。");
   return text.trim();
 }
 
@@ -66,127 +92,102 @@ export function makeSources(text: string): Source[] {
     .map((text, i) => ({ id: `s${i + 1}`, text: text.trim() }));
 }
 
-export function messagesFor(sources: Source[]) {
-  const escape = (text: string) =>
-    text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  return [
+export function messagesFor(
+  text: string,
+  question: Question,
+  previous: Completion[] = [],
+): Message[] {
+  const messages: Message[] = [
     { role: "system", content: prompt.system },
-    {
-      role: "user",
-      content:
-        "以下是文件接口返回的正文；sN 是段落编号，不是 PDF 页码。本次没有补充页图，不能声称已读取未解析的图片或扫描页。\n<paper>\n" +
-        sources.map((s) => `[${s.id}]\n${escape(s.text)}`).join("\n\n") +
-        "\n</paper>\n请完成六问，每题含 answer 和 sources。",
-    },
+    { role: "system", content: text },
+    { role: "user", content: QUESTIONS[QUESTION_IDS.indexOf(question)] },
   ];
+  for (const part of previous) {
+    messages.push(
+      {
+        role: "assistant",
+        content: part.content,
+        ...(part.reasoning ? { reasoning_content: part.reasoning } : {}),
+      },
+      { role: "user", content: "请接着完成同一个问题，从上次中断处继续。" },
+    );
+  }
+  return messages;
 }
 
-export function responseFormat() {
-  const properties = Object.fromEntries(
-    LIMITS.map((limit, i) => [
-      `q${i + 1}`,
-      {
-        type: "object",
-        properties: {
-          answer: { type: "string", minLength: 1, maxLength: limit },
-          sources: {
-            type: "array",
-            items: { type: "string" },
-            minItems: 1,
-            maxItems: 16,
-          },
-        },
-        required: ["answer", "sources"],
-        additionalProperties: false,
-      },
-    ]),
-  );
+export function batchRequest(
+  customID: string,
+  text: string,
+  question: Question,
+  previous: Completion[] = [],
+): BatchRequest {
   return {
-    type: "json_schema",
-    json_schema: {
-      name: "paper_six_questions_v2",
-      strict: true,
-      schema: {
-        type: "object",
-        properties,
-        required: Object.keys(properties),
-        additionalProperties: false,
+    custom_id: customID,
+    method: "POST",
+    url: "/v1/chat/completions",
+    body: {
+      model: MODEL,
+      messages: messagesFor(text, question, previous),
+      thinking: {
+        type: "enabled",
+        ...(previous.length ? { keep: "all" as const } : {}),
       },
+      max_tokens: MAX_OUTPUT,
     },
   };
 }
 
-export function validate(
-  completion: Completion,
-  sources: Source[],
-): { answers?: Answers; checks: Checks } {
-  const checks: Checks = { errors: [], warnings: [] };
-  const fail = (message: string) => checks.errors.push(message);
-  if (!completion.done || completion.finish !== "stop")
-    fail("响应没有完整结束。");
-  let data: Record<string, unknown>;
-  try {
-    data = JSON.parse(completion.content);
-  } catch {
-    fail("返回内容不是完整 JSON。");
-    return { checks };
-  }
-  const keys = LIMITS.map((_, i) => `q${i + 1}`);
-  if (
-    !data ||
-    Array.isArray(data) ||
-    Object.keys(data).sort().join() !== keys.join()
-  ) {
-    fail("返回内容必须包含完整的六问。");
-    return { checks };
-  }
-  const ids = new Set(sources.map((s) => s.id));
-  for (const [i, key] of keys.entries()) {
-    const answer = data[key] as Answer;
-    if (
-      !answer ||
-      Object.keys(answer).sort().join() !== "answer,sources" ||
-      typeof answer.answer !== "string" ||
-      !answer.answer.trim() ||
-      !Array.isArray(answer.sources)
-    ) {
-      fail(`${key} 的正文或来源格式无效。`);
-      continue;
+export function parseBatchResults(text: string): BatchResult[] {
+  const results: BatchResult[] = [];
+  const seen = new Set<string>();
+  for (const line of text.split(/\r?\n/).filter((line) => line.trim())) {
+    let row;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      throw new ReadingError("批次结果文件格式无效，已保留任务以便重新读取。");
     }
-    if ([...answer.answer].length > LIMITS[i])
-      checks.warnings.push(`${key} 超过建议字数，保留全文供检查。`);
-    if (/\[p\d+/.test(answer.answer)) fail(`${key} 引用了未提供的页码。`);
-    const expanded = answer.sources.flatMap((ref) => {
-      if (typeof ref !== "string" || ids.has(ref) || ref.length > 512)
-        return [ref];
-      const pattern = /(?<![a-zA-Z0-9_])s[1-9]\d*(?![a-zA-Z0-9_])/g;
-      const matches = ref.match(pattern);
-      if (
-        matches?.every((id) => ids.has(id)) &&
-        /^[\s,，;:'"[\]{}]*$/.test(ref.replace(pattern, ""))
+    if (typeof row?.custom_id !== "string" || seen.has(row.custom_id))
+      throw new ReadingError("批次结果中的问题标识缺失或重复。");
+    seen.add(row.custom_id);
+    const body = row.response?.body;
+    const choice = body?.choices?.find((c: { index?: number }) => !c.index);
+    const result: BatchResult = { customID: row.custom_id };
+    // Kimi's live Batch output also uses 0 for successful chat completions.
+    const succeeded =
+      row.response?.status_code === 200 ||
+      (row.response?.status_code === 0 &&
+        body?.object === "chat.completion" &&
+        choice);
+    if (row.error || body?.error || !succeeded) {
+      const status = Number(row.response?.status_code);
+      result.error =
+        Number.isInteger(status) && status > 0
+          ? `该题请求失败（HTTP ${status}）。`
+          : "该题未完成，可单独重试。";
+    } else if (
+      typeof choice?.message?.content !== "string" &&
+      !(
+        choice?.finish_reason === "length" &&
+        typeof choice.message?.reasoning_content === "string"
       )
-        return matches;
-      return [ref];
-    });
-    if (
-      expanded.length <= 16 &&
-      JSON.stringify(expanded) !== JSON.stringify(answer.sources)
     ) {
-      answer.sources = expanded;
-      checks.warnings.push(`${key} 的来源列表标点已规范化，原始响应已保留。`);
+      result.error = "该题没有返回可读答案。";
+    } else {
+      result.completion = {
+        content: choice.message.content ?? "",
+        reasoning:
+          typeof choice.message.reasoning_content === "string"
+            ? choice.message.reasoning_content
+            : undefined,
+        finish: choice.finish_reason,
+        done: choice.finish_reason === "stop",
+        usage: usageFrom(body.usage),
+      };
     }
-    if (
-      !answer.sources.length ||
-      answer.sources.length > 16 ||
-      new Set(answer.sources).size !== answer.sources.length ||
-      answer.sources.some((ref) => typeof ref !== "string" || !ids.has(ref))
-    )
-      fail(`${key} 的来源编号缺失、重复或不存在。`);
+    results.push(result);
   }
-  return {
-    answers: checks.errors.length ? undefined : (data as Answers),
-    checks,
-  };
+  return results;
 }
 
 export function usageFrom(raw: unknown): Usage | undefined {
@@ -208,27 +209,24 @@ export function usageFrom(raw: unknown): Usage | undefined {
   };
 }
 
-export function cost(usage: Usage): number {
-  const cached = usage.cached ?? 0;
-  return (
-    ((usage.input - cached) * 6.5 + cached * 1.1 + usage.output * 27) / 1e6
+export function totalUsage(results: BatchResult[]): Usage | undefined {
+  const reported = results.flatMap((r) =>
+    r.completion?.usage ? [r.completion.usage] : [],
   );
+  if (!reported.length) return;
+  return {
+    input: reported.reduce((sum, u) => sum + u.input, 0),
+    output: reported.reduce((sum, u) => sum + u.output, 0),
+    cached: reported.every((u) => u.cached !== undefined)
+      ? reported.reduce((sum, u) => sum + u.cached!, 0)
+      : undefined,
+  };
 }
 
-export function preflight(input: number, limit: number): number {
-  if (
-    !Number.isSafeInteger(input) ||
-    input < 1 ||
-    !Number.isFinite(limit) ||
-    limit <= 0
-  )
-    throw new Error("无法取得有效的输入估算或费用上限。");
-  if (input + 1024 + MAX_OUTPUT + 4096 > 256 * 1024)
-    throw new Error("论文超过当前上下文预算，未发起生成。");
-  const estimate = cost({ input: input + 1024, output: MAX_OUTPUT });
-  if (estimate > limit)
-    throw new Error(
-      `预估费用上界 ¥${estimate.toFixed(3)} 超过设置的 ¥${limit.toFixed(2)}，未发起生成。`,
-    );
-  return estimate;
+export function cost(usage: Usage, batch = false): number {
+  const cached = usage.cached ?? 0;
+  return (
+    (((usage.input - cached) * 6.5 + cached * 1.1 + usage.output * 27) / 1e6) *
+    (batch ? BATCH_DISCOUNT : 1)
+  );
 }

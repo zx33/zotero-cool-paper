@@ -426,6 +426,20 @@ item-pane-custom-section:has(.pcp-body) > collapsible-section > .body {
 .pcp-reading-answer p {
   margin: 7px 0;
 }
+
+.pcp-reading-answer table {
+  display: block;
+  max-width: 100%;
+  overflow-x: auto;
+  border-collapse: collapse;
+}
+
+.pcp-reading-answer th,
+.pcp-reading-answer td {
+  padding: 4px 8px;
+  border: 1px solid var(--fill-quinary);
+  text-align: left;
+}
 .pcp-reading-answer ul,
 .pcp-reading-answer ol {
   padding-left: 20px;

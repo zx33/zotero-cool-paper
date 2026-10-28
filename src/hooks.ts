@@ -2,6 +2,7 @@ import { getString, initLocale } from "./utils/locale";
 import { version as addonVersion } from "../package.json";
 import { initPapersCoolCache } from "./modules/cache";
 import { initReadingStore } from "./modules/localReading/store";
+import { readingService } from "./modules/localReading/service";
 import {
   registerLocalReadingItemPane,
   unregisterLocalReadingItemPane,
@@ -34,6 +35,7 @@ async function onStartup() {
   );
 
   addon.data.initialized = true;
+  void readingService.resumeAll().catch(() => {});
 }
 
 function onMainWindowLoad(win: _ZoteroTypes.MainWindow): void {

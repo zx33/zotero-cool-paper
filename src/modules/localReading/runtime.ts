@@ -23,7 +23,14 @@ export async function sha256(bytes: Uint8Array): Promise<string> {
     .join("");
 }
 
-export class ReadingError extends Error {}
+export class ReadingError extends Error {
+  constructor(
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+  }
+}
 export function safeError(error: unknown): string {
   // Never surface arbitrary HTTP, OS, or credential-manager exception strings.
   return error instanceof ReadingError
