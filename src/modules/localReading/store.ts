@@ -137,7 +137,7 @@ export const readingStore: ReadingStore = {
   async addRemote(file) {
     await initReadingStore();
     await privateQuery(
-      "INSERT OR REPLACE INTO pcp_reading_remote VALUES (?, ?)",
+      "INSERT OR REPLACE INTO pcp_reading_remote (id, account) VALUES (?, ?)",
       [file.id, file.account],
     );
   },

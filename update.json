@@ -3,13 +3,13 @@
     "zotero-cool-paper@andybear": {
       "updates": [
         {
-          "version": "0.1.16",
-          "update_link": "https://github.com/zx33/zotero-cool-paper/releases/download/v0.1.16/zotero-cool-paper.xpi",
-          "update_hash": "sha512:54f8dd9f4cbf53acd4a3990d00102161471f6974716856fd4605321dc507400d5332b733802ff51101eb21d9c38d8f9842bdde1d77ee6e2826a0dd927b3c80af",
+          "version": "0.1.18",
+          "update_link": "https://github.com/zx33/zotero-cool-paper/releases/download/v0.1.18/zotero-cool-paper.xpi",
+          "update_hash": "sha512:acc6216ac59b516b1788e216e5546be40b6f44f7925cf3da803f5008f4047caf3342141c890c353f9137714e3c7777bdbfe2ca74e4508562c95ee5c4b0d08c75",
           "applications": {
             "zotero": {
               "strict_min_version": "7.0",
-              "strict_max_version": "9.0.*"
+              "strict_max_version": "10.0.*"
             }
           }
         }

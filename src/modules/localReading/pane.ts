@@ -23,6 +23,7 @@ export const READING_PANE_ID = "zoterocoolpaper-local-reading";
 const HTML_NS = "http://www.w3.org/1999/xhtml";
 const BUDGET_PREF = `${config.prefsPrefix}.localReading.maxCost`;
 const cleanups = new Map<HTMLElement, () => void>();
+const paneItems = new WeakMap<HTMLElement, number | undefined>();
 let registeredPane: string | false = false;
 
 function element<K extends keyof HTMLElementTagNameMap>(
@@ -57,9 +58,14 @@ export function registerLocalReadingItemPane(): void {
       l10nID: `${config.addonRef}-local-reading-section-sidenav-tooltip`,
     },
     onItemChange: ({ item, setEnabled, body }) => {
-      cleanups.get(body)?.();
-      cleanups.delete(body);
-      body.replaceChildren();
+      // Zotero also calls this hook when refreshing the same item, without
+      // scheduling another async render. Keep its mounted content in that case.
+      if (paneItems.get(body) !== item?.id) {
+        cleanups.get(body)?.();
+        cleanups.delete(body);
+        body.replaceChildren();
+        paneItems.set(body, item?.id);
+      }
       setEnabled(Boolean(parent(item)));
       return true;
     },
@@ -88,6 +94,7 @@ export function registerLocalReadingItemPane(): void {
     onDestroy: ({ body }) => {
       cleanups.get(body)?.();
       cleanups.delete(body);
+      paneItems.delete(body);
     },
   });
 }

@@ -484,6 +484,28 @@ describe("Kimi local reading", function () {
       }
     });
 
+    it("writes cleanup records after a Batch version added the run_id column", async function () {
+      assert.include(Zotero.DataDirectory.dir, ".scaffold/test/data");
+      await readingStore.getText("schema-compatibility-fixture");
+      const columns = (await Zotero.DB.queryAsync(
+        "PRAGMA table_info(pcp_reading_remote)",
+      )) as { name: string }[];
+      if (!columns.some((column) => column.name === "run_id"))
+        await Zotero.DB.queryAsync(
+          "ALTER TABLE pcp_reading_remote ADD COLUMN run_id TEXT",
+        );
+      const id = `schema-test-${Zotero.Utilities.randomString(12)}`;
+      try {
+        await readingStore.addRemote({ id, account: id });
+        assert.include(
+          (await readingStore.pending(id)).map((file) => file.id),
+          id,
+        );
+      } finally {
+        await readingStore.removeRemote(id);
+      }
+    });
+
     it("round-trips credentials through the isolated profile login manager", async function () {
       assert.include(
         Zotero.DataDirectory.dir,

@@ -10,6 +10,7 @@ const supported = new Set([
   "--no-watch",
   "--exit-on-finish",
   "--abort-on-fail",
+  "--integration",
 ]);
 for (const flag of flags) {
   if (!supported.has(flag)) throw new Error(`Unsupported test option: ${flag}`);
@@ -18,6 +19,7 @@ const context = await Config.loadConfig({
   test: {
     watch: !flags.has("--no-watch") && !flags.has("--exit-on-finish"),
     abortOnFail: flags.has("--abort-on-fail"),
+    ...(flags.has("--integration") ? { entries: ["test/integration"] } : {}),
   },
 });
 const test = new Test(context);
